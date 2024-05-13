@@ -8405,7 +8405,7 @@ mod tests {
 pub(crate) mod bench_utils {
 	use super::*;
 	use std::fs::File;
-	use std::time::Duration;
+	use web_time::Duration;
 
 	use bitcoin::hashes::Hash;
 	use bitcoin::secp256k1::SecretKey;

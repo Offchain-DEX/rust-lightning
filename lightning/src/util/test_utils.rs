@@ -72,7 +72,7 @@ use bitcoin::bech32::u5;
 use crate::sign::{InMemorySigner, RandomBytes, Recipient, EntropySource, NodeSigner, SignerProvider};
 
 #[cfg(feature = "std")]
-use std::time::{SystemTime, UNIX_EPOCH};
+use web_time::{SystemTime, UNIX_EPOCH};
 use bitcoin::psbt::PartiallySignedTransaction;
 use bitcoin::Sequence;
 

@@ -39,7 +39,7 @@ extern crate core;
 extern crate serde;
 
 #[cfg(feature = "std")]
-use std::time::SystemTime;
+use web_time::SystemTime;
 
 use bech32::u5;
 use bitcoin::{Address, Network, PubkeyHash, ScriptHash};
@@ -2054,7 +2054,7 @@ mod test {
 		use lightning::routing::router::RouteHintHop;
 		use secp256k1::Secp256k1;
 		use secp256k1::{SecretKey, PublicKey};
-		use std::time::Duration;
+		use web_time::Duration;
 
 		let secp_ctx = Secp256k1::new();
 

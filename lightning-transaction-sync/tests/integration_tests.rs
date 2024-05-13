@@ -19,7 +19,7 @@ use bdk_macros::maybe_await;
 
 use std::env;
 use std::sync::Mutex;
-use std::time::Duration;
+use web_time::Duration;
 use std::collections::{HashMap, HashSet};
 
 pub fn setup_bitcoind_and_electrsd() -> (BitcoinD, ElectrsD) {

@@ -12,7 +12,7 @@ use lightning_invoice::*;
 use secp256k1::PublicKey;
 use secp256k1::ecdsa::{RecoverableSignature, RecoveryId};
 use std::collections::HashSet;
-use std::time::Duration;
+use web_time::Duration;
 use std::str::FromStr;
 
 fn get_test_tuples() -> Vec<(String, SignedRawBolt11Invoice, bool, bool)> {

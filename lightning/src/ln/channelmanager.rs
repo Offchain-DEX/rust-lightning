@@ -6018,8 +6018,8 @@ where
 			}
 
 			#[cfg(feature = "std")]
-			let duration_since_epoch = std::time::SystemTime::now()
-				.duration_since(std::time::SystemTime::UNIX_EPOCH)
+			let duration_since_epoch = web_time::SystemTime::now()
+				.duration_since(web_time::SystemTime::UNIX_EPOCH)
 				.expect("SystemTime::now() should come after SystemTime::UNIX_EPOCH");
 			#[cfg(not(feature = "std"))]
 			let duration_since_epoch = Duration::from_secs(

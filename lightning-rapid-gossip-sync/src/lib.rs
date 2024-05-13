@@ -287,7 +287,7 @@ mod tests {
 		assert_eq!(network_graph.read_only().channels().len(), 0);
 
 		let rapid_sync = RapidGossipSync::new(&network_graph, &logger);
-		let start = std::time::Instant::now();
+		let start = web_time::Instant::now();
 		let sync_result = rapid_sync
 			.sync_network_graph_with_file_path("./res/full_graph.lngossip");
 		if let Err(GraphSyncError::DecodeError(DecodeError::Io(io_error))) = &sync_result {

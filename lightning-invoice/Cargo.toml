@@ -25,6 +25,7 @@ lightning = { version = "0.0.123", path = "../lightning", default-features = fal
 secp256k1 = { version = "0.27.0", default-features = false, features = ["recovery", "alloc"] }
 serde = { version = "1.0.118", optional = true }
 bitcoin = { version = "0.30.2", default-features = false }
+web-time = { version = "1", features = ["serde"] }
 
 [dev-dependencies]
 lightning = { version = "0.0.123", path = "../lightning", default-features = false, features = ["_test_utils"] }

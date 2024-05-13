@@ -52,7 +52,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 #[cfg(feature = "std")]
 use std::thread::{self, JoinHandle};
 #[cfg(feature = "std")]
-use std::time::Instant;
+use web_time::Instant;
 
 #[cfg(not(feature = "std"))]
 use alloc::vec::Vec;
@@ -537,7 +537,7 @@ use core::task;
 /// # use lightning::io;
 /// # use std::sync::{Arc, RwLock};
 /// # use std::sync::atomic::{AtomicBool, Ordering};
-/// # use std::time::SystemTime;
+/// # use web_time::SystemTime;
 /// # use lightning_background_processor::{process_events_async, GossipSync};
 /// # struct Logger {}
 /// # impl lightning::util::logger::Logger for Logger {
@@ -836,7 +836,7 @@ impl BackgroundProcessor {
 					handle_network_graph_update(network_graph, &event)
 				}
 				if let Some(ref scorer) = scorer {
-					use std::time::SystemTime;
+					use web_time::SystemTime;
 					let duration_since_epoch = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH)
 						.expect("Time should be sometime after 1970");
 					if update_scorer(scorer, &event, duration_since_epoch) {
@@ -860,7 +860,7 @@ impl BackgroundProcessor {
 				).wait_timeout(Duration::from_millis(100)); },
 				|_| Instant::now(), |time: &Instant, dur| time.elapsed().as_secs() > dur, false,
 				|| {
-					use std::time::SystemTime;
+					use web_time::SystemTime;
 					Some(SystemTime::now().duration_since(SystemTime::UNIX_EPOCH)
 						.expect("Time should be sometime after 1970"))
 				},
@@ -956,7 +956,7 @@ mod tests {
 	use std::path::PathBuf;
 	use std::sync::{Arc, Mutex};
 	use std::sync::mpsc::SyncSender;
-	use std::time::Duration;
+	use web_time::Duration;
 	use lightning_rapid_gossip_sync::RapidGossipSync;
 	use super::{BackgroundProcessor, GossipSync, FRESHNESS_TIMER};
 

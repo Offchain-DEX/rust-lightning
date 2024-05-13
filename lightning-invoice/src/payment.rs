@@ -90,7 +90,7 @@ mod tests {
 	use secp256k1::{SecretKey, PublicKey, Secp256k1};
 	use core::time::Duration;
 	#[cfg(feature = "std")]
-	use std::time::SystemTime;
+	use web_time::SystemTime;
 
 	fn duration_since_epoch() -> Duration {
 		#[cfg(feature = "std")]

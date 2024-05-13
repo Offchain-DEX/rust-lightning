@@ -2886,13 +2886,13 @@ mod tests {
 		// Until we have std::thread::scoped we have to unsafe { turn off the borrow checker }.
 		let peers = Arc::new(create_network(2, unsafe { &*(&*cfgs as *const _) as &'static _ }));
 
-		let start_time = std::time::Instant::now();
+		let start_time = web_time::Instant::now();
 		macro_rules! spawn_thread { ($id: expr) => { {
 			let peers = Arc::clone(&peers);
 			let cfgs = Arc::clone(&cfgs);
 			std::thread::spawn(move || {
 				let mut ctr = 0;
-				while start_time.elapsed() < std::time::Duration::from_secs(1) {
+				while start_time.elapsed() < web_time::Duration::from_secs(1) {
 					let id_a = peers[0].node_signer.get_node_id(Recipient::Node).unwrap();
 					let mut fd_a = FileDescriptor {
 						fd: $id  + ctr * 3, outbound_data: Arc::new(Mutex::new(Vec::new())),
@@ -2908,7 +2908,7 @@ mod tests {
 					peers[0].new_inbound_connection(fd_a.clone(), Some(addr_b.clone())).unwrap();
 					if peers[0].read_event(&mut fd_a, &initial_data).is_err() { break; }
 
-					while start_time.elapsed() < std::time::Duration::from_secs(1) {
+					while start_time.elapsed() < web_time::Duration::from_secs(1) {
 						peers[0].process_events();
 						if fd_a.disconnect.load(Ordering::Acquire) { break; }
 						let a_data = fd_a.outbound_data.lock().unwrap().split_off(0);
@@ -2945,7 +2945,7 @@ mod tests {
 					peers[0].socket_disconnected(&fd_a);
 					peers[1].socket_disconnected(&fd_b);
 					ctr += 1;
-					std::thread::sleep(std::time::Duration::from_micros(1));
+					std::thread::sleep(web_time::Duration::from_micros(1));
 				}
 			})
 		} } }
@@ -3419,7 +3419,7 @@ mod tests {
 	#[test]
 	#[cfg(feature = "std")]
 	fn test_process_events_multithreaded() {
-		use std::time::{Duration, Instant};
+		use web_time::{Duration, Instant};
 		// Test that `process_events` getting called on multiple threads doesn't generate too many
 		// loop iterations.
 		// Each time `process_events` goes around the loop we call

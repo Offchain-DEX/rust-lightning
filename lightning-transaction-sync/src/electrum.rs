@@ -19,7 +19,7 @@ use bitcoin::hashes::sha256d::Hash as Sha256d;
 use std::ops::Deref;
 use std::sync::Mutex;
 use std::collections::HashSet;
-use std::time::Instant;
+use web_time::Instant;
 
 /// Synchronizes LDK with a given Electrum server.
 ///

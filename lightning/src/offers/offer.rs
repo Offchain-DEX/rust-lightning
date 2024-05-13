@@ -31,7 +31,7 @@
 //!
 //! # use lightning::blinded_path::BlindedPath;
 //! # #[cfg(feature = "std")]
-//! # use std::time::SystemTime;
+//! # use web_time::SystemTime;
 //! #
 //! # fn create_blinded_path() -> BlindedPath { unimplemented!() }
 //! # fn create_another_blinded_path() -> BlindedPath { unimplemented!() }
@@ -111,7 +111,7 @@ use {
 use crate::prelude::*;
 
 #[cfg(feature = "std")]
-use std::time::SystemTime;
+use web_time::SystemTime;
 
 pub(super) const IV_BYTES: &[u8; IV_LEN] = b"LDK Offer ~~~~~~";
 

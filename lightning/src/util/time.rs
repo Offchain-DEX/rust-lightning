@@ -44,7 +44,7 @@ impl Sub<Duration> for Eternity {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg(feature = "std")]
-pub struct MonotonicTime(std::time::Instant);
+pub struct MonotonicTime(web_time::Instant);
 
 /// The amount of time to shift `Instant` forward to prevent overflow when subtracting a `Duration`
 /// from `Instant::now` on some operating systems (e.g., iOS representing `Instance` as `u64`).
@@ -54,7 +54,7 @@ const SHIFT: Duration = Duration::from_secs(10 * 365 * 24 * 60 * 60); // 10 year
 #[cfg(feature = "std")]
 impl Time for MonotonicTime {
 	fn now() -> Self {
-		let instant = std::time::Instant::now().checked_add(SHIFT).expect("Overflow on MonotonicTime instantiation");
+		let instant = web_time::Instant::now().checked_add(SHIFT).expect("Overflow on MonotonicTime instantiation");
 		Self(instant)
 	}
 
