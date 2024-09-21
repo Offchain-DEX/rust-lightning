@@ -136,7 +136,7 @@ use crate::util::string::PrintableString;
 use crate::prelude::*;
 
 #[cfg(feature = "std")]
-use std::time::SystemTime;
+use web_time::SystemTime;
 
 pub(crate) const DEFAULT_RELATIVE_EXPIRY: Duration = Duration::from_secs(7200);
 

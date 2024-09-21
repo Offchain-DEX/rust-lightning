@@ -48,7 +48,7 @@ use core::{cmp, fmt};
 pub use lightning_types::routing::RoutingFees;
 
 #[cfg(feature = "std")]
-use std::time::{SystemTime, UNIX_EPOCH};
+use web_time::{SystemTime, UNIX_EPOCH};
 
 /// We remove stale channel directional info two weeks after the last update, per BOLT 7's
 /// suggestion.
@@ -182,7 +182,7 @@ pub struct NetworkGraph<L: Deref> where L::Target: Logger {
 	// Lock order: removed_channels -> removed_nodes
 	//
 	// NOTE: In the following `removed_*` maps, we use seconds since UNIX epoch to track time instead
-	// of `std::time::Instant`s for a few reasons:
+	// of `web_time::Instant`s for a few reasons:
 	//   * We want it to be possible to do tracking in no-std environments where we can compare
 	//     a provided current UNIX timestamp with the time at which we started tracking.
 	//   * In the future, if we decide to persist these maps, they will already be serializable.
@@ -2674,7 +2674,7 @@ pub(crate) mod tests {
 
 		#[cfg(feature = "std")]
 		{
-			use std::time::{SystemTime, UNIX_EPOCH};
+			use web_time::{SystemTime, UNIX_EPOCH};
 
 			let tracking_time = SystemTime::now().duration_since(UNIX_EPOCH).expect("Time must be > 1970").as_secs();
 			// Mark a node as permanently failed so it's tracked as removed.
@@ -2994,7 +2994,7 @@ pub(crate) mod tests {
 			// We want to check that this will work even if *one* of the channel updates is recent,
 			// so we should add it with a recent timestamp.
 			assert!(network_graph.read_only().channels().get(&short_channel_id).unwrap().one_to_two.is_none());
-			use std::time::{SystemTime, UNIX_EPOCH};
+			use web_time::{SystemTime, UNIX_EPOCH};
 			let announcement_time = SystemTime::now().duration_since(UNIX_EPOCH).expect("Time must be > 1970").as_secs();
 			let valid_channel_update = get_signed_channel_update(|unsigned_channel_update| {
 				unsigned_channel_update.timestamp = (announcement_time + 1 + STALE_CHANNEL_UPDATE_AGE_LIMIT_SECS) as u32;
@@ -3015,7 +3015,7 @@ pub(crate) mod tests {
 
 		#[cfg(feature = "std")]
 		{
-			use std::time::{SystemTime, UNIX_EPOCH};
+			use web_time::{SystemTime, UNIX_EPOCH};
 
 			let tracking_time = SystemTime::now().duration_since(UNIX_EPOCH).expect("Time must be > 1970").as_secs();
 
@@ -3266,7 +3266,7 @@ pub(crate) mod tests {
 	#[test]
 	#[cfg(feature = "std")]
 	fn calling_sync_routing_table() {
-		use std::time::{SystemTime, UNIX_EPOCH};
+		use web_time::{SystemTime, UNIX_EPOCH};
 		use crate::ln::msgs::Init;
 
 		let network_graph = create_network_graph();
