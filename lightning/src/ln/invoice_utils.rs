@@ -62,7 +62,7 @@ use core::iter::Iterator;
 /// [`PhantomRouteHints::channels`]: crate::ln::channelmanager::PhantomRouteHints::channels
 /// [`MIN_FINAL_CLTV_EXPIRY_DETLA`]: crate::ln::channelmanager::MIN_FINAL_CLTV_EXPIRY_DELTA
 ///
-/// This can be used in a `no_std` environment, where [`std::time::SystemTime`] is not
+/// This can be used in a `no_std` environment, where [`web_time::SystemTime`] is not
 /// available and the current time is supplied by the caller.
 pub fn create_phantom_invoice<ES: Deref, NS: Deref, L: Deref>(
 	amt_msat: Option<u64>, payment_hash: Option<PaymentHash>, description: String,
@@ -118,7 +118,7 @@ where
 /// [`ChannelManager::create_inbound_payment_for_hash`]: crate::ln::channelmanager::ChannelManager::create_inbound_payment_for_hash
 /// [`PhantomRouteHints::channels`]: crate::ln::channelmanager::PhantomRouteHints::channels
 ///
-/// This can be used in a `no_std` environment, where [`std::time::SystemTime`] is not
+/// This can be used in a `no_std` environment, where [`web_time::SystemTime`] is not
 /// available and the current time is supplied by the caller.
 pub fn create_phantom_invoice_with_description_hash<ES: Deref, NS: Deref, L: Deref>(
 	amt_msat: Option<u64>, payment_hash: Option<PaymentHash>, invoice_expiry_delta_secs: u32,
@@ -346,7 +346,7 @@ where
 	R::Target: Router,
 	L::Target: Logger,
 {
-	use std::time::SystemTime;
+	use web_time::SystemTime;
 	let duration = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH)
 		.expect("for the foreseeable future this shouldn't happen");
 	create_invoice_from_channelmanager_and_duration_since_epoch(
@@ -387,7 +387,7 @@ where
 	R::Target: Router,
 	L::Target: Logger,
 {
-	use std::time::SystemTime;
+	use web_time::SystemTime;
 
 	let duration = SystemTime::now()
 		.duration_since(SystemTime::UNIX_EPOCH)
@@ -400,7 +400,7 @@ where
 }
 
 /// See [`create_invoice_from_channelmanager_with_description_hash`]
-/// This version can be used in a `no_std` environment, where [`std::time::SystemTime`] is not
+/// This version can be used in a `no_std` environment, where [`web_time::SystemTime`] is not
 /// available and the current time is supplied by the caller.
 pub fn create_invoice_from_channelmanager_with_description_hash_and_duration_since_epoch<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, L: Deref>(
 	channelmanager: &ChannelManager<M, T, ES, NS, SP, F, R, L>, node_signer: NS, logger: L,
@@ -425,7 +425,7 @@ pub fn create_invoice_from_channelmanager_with_description_hash_and_duration_sin
 }
 
 /// See [`create_invoice_from_channelmanager`]
-/// This version can be used in a `no_std` environment, where [`std::time::SystemTime`] is not
+/// This version can be used in a `no_std` environment, where [`web_time::SystemTime`] is not
 /// available and the current time is supplied by the caller.
 pub fn create_invoice_from_channelmanager_and_duration_since_epoch<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, L: Deref>(
 	channelmanager: &ChannelManager<M, T, ES, NS, SP, F, R, L>, node_signer: NS, logger: L,

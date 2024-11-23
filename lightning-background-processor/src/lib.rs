@@ -53,7 +53,7 @@ use std::sync::Arc;
 #[cfg(feature = "std")]
 use std::thread::{self, JoinHandle};
 #[cfg(feature = "std")]
-use std::time::Instant;
+use web_time::Instant;
 
 #[cfg(not(feature = "std"))]
 use alloc::boxed::Box;
@@ -229,7 +229,8 @@ impl<
 		G,
 		&'a (dyn UtxoLookup + Send + Sync),
 		L,
-	> where
+	>
+where
 	L::Target: Logger,
 {
 	/// Initializes a new [`GossipSync::Rapid`] variant.
@@ -246,7 +247,8 @@ impl<'a, L: Deref>
 		&'a NetworkGraph<L>,
 		&'a (dyn UtxoLookup + Send + Sync),
 		L,
-	> where
+	>
+where
 	L::Target: Logger,
 {
 	/// Initializes a new [`GossipSync::None`] variant.
@@ -621,7 +623,7 @@ use futures_util::{dummy_waker, OptionalSelector, Selector, SelectorOutput};
 /// # use lightning::events::ReplayEvent;
 /// # use std::sync::{Arc, RwLock};
 /// # use std::sync::atomic::{AtomicBool, Ordering};
-/// # use std::time::SystemTime;
+/// # use web_time::SystemTime;
 /// # use lightning_background_processor::{process_events_async, GossipSync};
 /// # struct Logger {}
 /// # impl lightning::util::logger::Logger for Logger {
@@ -949,7 +951,7 @@ impl BackgroundProcessor {
 					handle_network_graph_update(network_graph, &event)
 				}
 				if let Some(ref scorer) = scorer {
-					use std::time::SystemTime;
+					use web_time::SystemTime;
 					let duration_since_epoch = SystemTime::now()
 						.duration_since(SystemTime::UNIX_EPOCH)
 						.expect("Time should be sometime after 1970");
@@ -996,7 +998,7 @@ impl BackgroundProcessor {
 				|time: &Instant, dur| time.elapsed().as_secs() > dur,
 				false,
 				|| {
-					use std::time::SystemTime;
+					use web_time::SystemTime;
 					Some(
 						SystemTime::now()
 							.duration_since(SystemTime::UNIX_EPOCH)
@@ -1108,8 +1110,8 @@ mod tests {
 	use std::path::PathBuf;
 	use std::sync::mpsc::SyncSender;
 	use std::sync::Arc;
-	use std::time::Duration;
 	use std::{env, fs};
+	use web_time::Duration;
 
 	const EVENT_DEADLINE: u64 = 5 * FRESHNESS_TIMER;
 

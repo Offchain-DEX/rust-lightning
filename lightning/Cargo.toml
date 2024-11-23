@@ -51,6 +51,8 @@ backtrace = { version = "0.3", optional = true }
 
 libm = { version = "0.2", optional = true, default-features = false }
 
+web-time = { version = "1", features = ["serde"] }
+
 [dev-dependencies]
 regex = "1.5.6"
 lightning-types = { version = "0.1.0", path = "../lightning-types", features = ["_test_utils"] }
