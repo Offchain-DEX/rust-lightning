@@ -271,7 +271,7 @@ where {
 	/// # use lightning_liquidity::LiquidityManager;
 	/// # use std::sync::{Arc, RwLock};
 	/// # use std::sync::atomic::{AtomicBool, Ordering};
-	/// # use std::time::SystemTime;
+	/// # use web_time::SystemTime;
 	/// # struct MyStore {}
 	/// # impl lightning::util::persist::KVStore for MyStore {
 	/// #     fn read(&self, primary_namespace: &str, secondary_namespace: &str, key: &str) -> io::Result<Vec<u8>> { Ok(Vec::new()) }

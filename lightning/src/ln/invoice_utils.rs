@@ -62,7 +62,7 @@ use core::iter::Iterator;
 /// [`PhantomRouteHints::channels`]: crate::ln::channelmanager::PhantomRouteHints::channels
 /// [`MIN_FINAL_CLTV_EXPIRY_DETLA`]: crate::ln::channelmanager::MIN_FINAL_CLTV_EXPIRY_DELTA
 #[cfg_attr(feature = "std", doc = "")]
-#[cfg_attr(feature = "std", doc = "This can be used in a `no_std` environment, where [`std::time::SystemTime`] is not available and the current time is supplied by the caller.")]
+#[cfg_attr(feature = "std", doc = "This can be used in a `no_std` environment, where [`web_time::SystemTime`] is not available and the current time is supplied by the caller.")]
 pub fn create_phantom_invoice<ES: Deref, NS: Deref, L: Deref>(
 	amt_msat: Option<u64>, payment_hash: Option<PaymentHash>, description: String,
 	invoice_expiry_delta_secs: u32, phantom_route_hints: Vec<PhantomRouteHints>, entropy_source: ES,
@@ -117,7 +117,7 @@ where
 /// [`ChannelManager::create_inbound_payment_for_hash`]: crate::ln::channelmanager::ChannelManager::create_inbound_payment_for_hash
 /// [`PhantomRouteHints::channels`]: crate::ln::channelmanager::PhantomRouteHints::channels
 #[cfg_attr(feature = "std", doc = "")]
-#[cfg_attr(feature = "std", doc = "This version can be used in a `no_std` environment, where [`std::time::SystemTime`] is not available and the current time is supplied by the caller.")]
+#[cfg_attr(feature = "std", doc = "This version can be used in a `no_std` environment, where [`web_time::SystemTime`] is not available and the current time is supplied by the caller.")]
 pub fn create_phantom_invoice_with_description_hash<ES: Deref, NS: Deref, L: Deref>(
 	amt_msat: Option<u64>, payment_hash: Option<PaymentHash>, invoice_expiry_delta_secs: u32,
 	description_hash: Sha256, phantom_route_hints: Vec<PhantomRouteHints>, entropy_source: ES,

@@ -48,7 +48,7 @@ use crate::routing::gossip::NodeId;
 #[cfg(feature = "std")]
 use {
 	crate::util::time::Instant as TestTime,
-	std::time::{SystemTime, Instant, Duration},
+	web_time::{SystemTime, Instant, Duration},
 };
 
 #[test]

@@ -42,8 +42,8 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::SyncSender;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 use std::{env, fs};
+use web_time::Duration;
 
 pub(crate) struct TestEntropy {}
 impl EntropySource for TestEntropy {
