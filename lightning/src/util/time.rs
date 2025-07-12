@@ -4,13 +4,13 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
-//! A simple module which either re-exports [`std::time::Instant`] or a mocked version of it for
+//! A simple module which either re-exports [`web_time::Instant`] or a mocked version of it for
 //! tests.
 
 #[cfg(test)]
 pub use test::Instant;
 #[cfg(not(test))]
-pub use std::time::Instant;
+pub use web_time::Instant;
 
 #[cfg(test)]
 mod test {

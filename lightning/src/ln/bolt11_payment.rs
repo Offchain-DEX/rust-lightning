@@ -92,7 +92,7 @@ mod tests {
 	use bitcoin::hashes::sha256::Hash as Sha256;
 	use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 	use lightning_invoice::{Currency, InvoiceBuilder};
-	use std::time::SystemTime;
+	use web_time::SystemTime;
 
 	#[test]
 	fn invoice_test() {

@@ -146,7 +146,7 @@ mod tests {
 		use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 		use core::sync::atomic::{AtomicU16, Ordering};
 		use std::sync::Arc;
-		use std::time::Duration;
+		use web_time::Duration;
 
 		let event_queue = Arc::new(EventQueue::new());
 		assert_eq!(event_queue.next_event(), None);

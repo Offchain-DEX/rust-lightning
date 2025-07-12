@@ -1070,7 +1070,7 @@ impl msgs::RoutingMessageHandler for TestRoutingMessageHandler {
 		let mut gossip_start_time = 0;
 		#[cfg(feature = "std")]
 		{
-			use std::time::{SystemTime, UNIX_EPOCH};
+			use web_time::{SystemTime, UNIX_EPOCH};
 			gossip_start_time = SystemTime::now().duration_since(UNIX_EPOCH).expect("Time must be > 1970").as_secs();
 			if self.request_full_sync.load(Ordering::Acquire) {
 				gossip_start_time -= 60 * 60 * 24 * 7 * 2; // 2 weeks ago

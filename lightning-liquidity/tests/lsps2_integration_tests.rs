@@ -26,7 +26,7 @@ use bitcoin::Network;
 
 use chrono::DateTime;
 
-use std::time::Duration;
+use web_time::Duration;
 
 fn create_jit_invoice(
 	node: &Node, service_node_id: PublicKey, intercept_scid: u64, cltv_expiry_delta: u32,
