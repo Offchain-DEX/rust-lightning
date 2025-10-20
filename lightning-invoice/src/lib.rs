@@ -28,7 +28,7 @@ extern crate lightning_types;
 extern crate serde;
 
 #[cfg(feature = "std")]
-use std::time::SystemTime;
+use web_time::SystemTime;
 
 use bech32::primitives::decode::CheckedHrpstringError;
 use bech32::{Checksum, Fe32};
@@ -2233,7 +2233,7 @@ mod test {
 		use bitcoin::secp256k1::Secp256k1;
 		use bitcoin::secp256k1::{PublicKey, SecretKey};
 		use lightning_types::routing::RouteHintHop;
-		use std::time::Duration;
+		use web_time::Duration;
 
 		let secp_ctx = Secp256k1::new();
 

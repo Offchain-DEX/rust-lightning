@@ -9,7 +9,7 @@ use bitcoin::{PubkeyHash, ScriptHash, WitnessVersion};
 use lightning_invoice::*;
 use std::collections::HashSet;
 use std::str::FromStr;
-use std::time::Duration;
+use web_time::Duration;
 
 fn get_test_tuples() -> Vec<(String, SignedRawBolt11Invoice, bool, bool)> {
 	vec![

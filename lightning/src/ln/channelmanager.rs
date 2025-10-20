@@ -8270,8 +8270,8 @@ where
 			}
 
 			#[cfg(feature = "std")]
-			let duration_since_epoch = std::time::SystemTime::now()
-				.duration_since(std::time::SystemTime::UNIX_EPOCH)
+			let duration_since_epoch = web_time::SystemTime::now()
+				.duration_since(web_time::SystemTime::UNIX_EPOCH)
 				.expect("SystemTime::now() should come after SystemTime::UNIX_EPOCH");
 			#[cfg(not(feature = "std"))]
 			let duration_since_epoch = Duration::from_secs(
@@ -8781,7 +8781,8 @@ where
 		ComplFunc: FnOnce(
 			Option<u64>,
 			bool,
-		) -> (Option<MonitorUpdateCompletionAction>, Option<RAAMonitorUpdateBlockingAction>),
+		)
+			-> (Option<MonitorUpdateCompletionAction>, Option<RAAMonitorUpdateBlockingAction>),
 	>(
 		&self, prev_hop: HTLCPreviousHopData, payment_preimage: PaymentPreimage,
 		payment_info: Option<PaymentClaimDetails>, attribution_data: Option<AttributionData>,
@@ -8819,7 +8820,8 @@ where
 		ComplFunc: FnOnce(
 			Option<u64>,
 			bool,
-		) -> (Option<MonitorUpdateCompletionAction>, Option<RAAMonitorUpdateBlockingAction>),
+		)
+			-> (Option<MonitorUpdateCompletionAction>, Option<RAAMonitorUpdateBlockingAction>),
 	>(
 		&self, prev_hop: HTLCClaimSource, payment_preimage: PaymentPreimage,
 		payment_info: Option<PaymentClaimDetails>, attribution_data: Option<AttributionData>,
@@ -12404,7 +12406,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 
 		#[cfg(feature = "std")]
 		let duration_since_epoch = {
-			use std::time::SystemTime;
+			use web_time::SystemTime;
 			SystemTime::now().duration_since(SystemTime::UNIX_EPOCH)
 				.expect("SystemTime::now() should be after SystemTime::UNIX_EPOCH")
 		};
@@ -13214,8 +13216,8 @@ where
 		#[cfg(not(feature = "std"))]
 		let now = Duration::from_secs(self.highest_seen_timestamp.load(Ordering::Acquire) as u64);
 		#[cfg(feature = "std")]
-		let now = std::time::SystemTime::now()
-			.duration_since(std::time::SystemTime::UNIX_EPOCH)
+		let now = web_time::SystemTime::now()
+			.duration_since(web_time::SystemTime::UNIX_EPOCH)
 			.expect("SystemTime::now() should come after SystemTime::UNIX_EPOCH");
 
 		now

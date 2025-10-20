@@ -9,7 +9,7 @@ use std::fmt;
 #[cfg(not(feature = "tokio"))]
 use std::io::Write;
 use std::net::{SocketAddr, ToSocketAddrs};
-use std::time::Duration;
+use web_time::Duration;
 
 #[cfg(feature = "tokio")]
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};

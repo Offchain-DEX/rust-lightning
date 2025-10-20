@@ -185,7 +185,7 @@ mod test {
 
 	use std::ops::Deref;
 	use std::sync::Mutex;
-	use std::time::{Duration, Instant, SystemTime};
+	use web_time::{Duration, Instant, SystemTime};
 
 	struct TestLogger {
 		node: &'static str,

@@ -27,6 +27,8 @@ lightning-rapid-gossip-sync = { version = "0.2.0-beta1", path = "../lightning-ra
 lightning-liquidity = { version = "0.2.0-beta1", path = "../lightning-liquidity", default-features = false }
 possiblyrandom = { version = "0.2", path = "../possiblyrandom", default-features = false }
 
+web-time = { version = "1", features = ["serde"] }
+
 [dev-dependencies]
 tokio = { version = "1.35", features = [ "macros", "rt", "rt-multi-thread", "sync", "time" ] }
 lightning = { version = "0.2.0-beta1", path = "../lightning", features = ["_test_utils"] }

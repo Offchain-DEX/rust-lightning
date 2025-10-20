@@ -23,6 +23,8 @@ lightning-types = { version = "0.3.0-beta1", path = "../lightning-types", defaul
 serde = { version = "1.0", optional = true, default-features = false, features = ["alloc"] }
 bitcoin = { version = "0.32.2", default-features = false, features = ["secp-recovery"] }
 
+web-time = { version = "1", features = ["serde"] }
+
 [dev-dependencies]
 serde_json = { version = "1"}
 hashbrown = { version = "0.13", default-features = false }

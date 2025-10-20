@@ -1349,7 +1349,7 @@ mod test {
 					PaymentHash(Sha256(payment_hash)).into(),
 					Description(crate::Description::new(description).unwrap()).into(),
 					PayeePubKey(crate::PayeePubKey(payee_pk)).into(),
-					ExpiryTime(crate::ExpiryTime(std::time::Duration::from_secs(u64::MAX))).into(),
+					ExpiryTime(crate::ExpiryTime(web_time::Duration::from_secs(u64::MAX))).into(),
 					MinFinalCltvExpiryDelta(crate::MinFinalCltvExpiryDelta(u64::MAX)).into(),
 					Fallback(fallback_addr).into(),
 					PrivateRoute(crate::PrivateRoute(RouteHint(route_hints))).into(),

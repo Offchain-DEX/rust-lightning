@@ -1563,7 +1563,7 @@ impl BaseMessageHandler for TestRoutingMessageHandler {
 		let mut gossip_start_time = 0;
 		#[cfg(feature = "std")]
 		{
-			use std::time::{SystemTime, UNIX_EPOCH};
+			use web_time::{SystemTime, UNIX_EPOCH};
 			gossip_start_time = SystemTime::now()
 				.duration_since(UNIX_EPOCH)
 				.expect("Time must be > 1970")

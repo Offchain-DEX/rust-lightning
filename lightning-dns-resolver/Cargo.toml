@@ -13,6 +13,8 @@ lightning-types = { version = "0.3.0-beta1", path = "../lightning-types", defaul
 dnssec-prover = { version = "0.6", default-features = false, features = [ "std", "tokio" ] }
 tokio = { version = "1.0", default-features = false, features = ["rt"] }
 
+web-time = { version = "1", features = ["serde"] }
+
 [dev-dependencies]
 bitcoin = { version = "0.32" }
 tokio = { version = "1.0", default-features = false, features = ["macros", "time"] }
