@@ -259,7 +259,8 @@ impl<
 		G,
 		&'a (dyn UtxoLookup + Send + Sync),
 		L,
-	> where
+	>
+where
 	L::Target: Logger,
 {
 	/// Initializes a new [`GossipSync::Rapid`] variant.
@@ -276,7 +277,8 @@ impl<'a, L: Deref>
 		&'a NetworkGraph<L>,
 		&'a (dyn UtxoLookup + Send + Sync),
 		L,
-	> where
+	>
+where
 	L::Target: Logger,
 {
 	/// Initializes a new [`GossipSync::None`] variant.
@@ -300,7 +302,7 @@ where
 
 /// Updates scorer based on event and returns whether an update occurred so we can decide whether
 /// to persist.
-fn update_scorer<'a, S: Deref<Target = SC> + Send + Sync, SC: 'a + WriteableScore<'a>>(
+fn update_scorer<'a, S: Deref<Target = SC> + Sync, SC: 'a + WriteableScore<'a>>(
 	scorer: &'a S, event: &Event, duration_since_epoch: Duration,
 ) -> bool {
 	match event {
@@ -887,9 +889,8 @@ pub async fn process_events_async<
 	P: Deref,
 	EventHandlerFuture: core::future::Future<Output = Result<(), ReplayEvent>>,
 	EventHandler: Fn(Event) -> EventHandlerFuture,
-	ES: Deref + Send,
+	ES: Deref,
 	M: Deref<Target = ChainMonitor<<CM::Target as AChannelManager>::Signer, CF, T, F, L, P, ES>>
-		+ Send
 		+ Sync,
 	CM: Deref,
 	OM: Deref,
@@ -901,7 +902,7 @@ pub async fn process_events_async<
 	O: Deref,
 	K: Deref,
 	OS: Deref<Target = OutputSweeper<T, D, F, CF, K, L, O>>,
-	S: Deref<Target = SC> + Send + Sync,
+	S: Deref<Target = SC> + Sync,
 	SC: for<'b> WriteableScore<'b>,
 	SleepFuture: core::future::Future<Output = bool> + core::marker::Unpin,
 	Sleeper: Fn(Duration) -> SleepFuture,
@@ -1869,8 +1870,8 @@ mod tests {
 	use std::path::PathBuf;
 	use std::sync::mpsc::SyncSender;
 	use std::sync::Arc;
-	use web_time::Duration;
 	use std::{env, fs};
+	use web_time::Duration;
 
 	const EVENT_DEADLINE: Duration =
 		Duration::from_millis(5 * (FRESHNESS_TIMER.as_millis() as u64));
