@@ -302,7 +302,7 @@ where
 
 /// Updates scorer based on event and returns whether an update occurred so we can decide whether
 /// to persist.
-fn update_scorer<'a, S: Deref<Target = SC> + Sync, SC: 'a + WriteableScore<'a>>(
+fn update_scorer<'a, S: Deref<Target = SC>, SC: 'a + WriteableScore<'a>>(
 	scorer: &'a S, event: &Event, duration_since_epoch: Duration,
 ) -> bool {
 	match event {
@@ -890,8 +890,7 @@ pub async fn process_events_async<
 	EventHandlerFuture: core::future::Future<Output = Result<(), ReplayEvent>>,
 	EventHandler: Fn(Event) -> EventHandlerFuture,
 	ES: Deref,
-	M: Deref<Target = ChainMonitor<<CM::Target as AChannelManager>::Signer, CF, T, F, L, P, ES>>
-		+ Sync,
+	M: Deref<Target = ChainMonitor<<CM::Target as AChannelManager>::Signer, CF, T, F, L, P, ES>>,
 	CM: Deref,
 	OM: Deref,
 	PGS: Deref<Target = P2PGossipSync<G, UL, L>>,
@@ -902,7 +901,7 @@ pub async fn process_events_async<
 	O: Deref,
 	K: Deref,
 	OS: Deref<Target = OutputSweeper<T, D, F, CF, K, L, O>>,
-	S: Deref<Target = SC> + Sync,
+	S: Deref<Target = SC>,
 	SC: for<'b> WriteableScore<'b>,
 	SleepFuture: core::future::Future<Output = bool> + core::marker::Unpin,
 	Sleeper: Fn(Duration) -> SleepFuture,
