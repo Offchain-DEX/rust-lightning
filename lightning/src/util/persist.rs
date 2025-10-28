@@ -160,7 +160,7 @@ where
 {
 	fn read(
 		&self, primary_namespace: &str, secondary_namespace: &str, key: &str,
-	) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, io::Error>> + 'static + Send>> {
+	) -> AsyncResult<'static, Vec<u8>, io::Error> {
 		let res = self.0.read(primary_namespace, secondary_namespace, key);
 
 		Box::pin(async move { res })
@@ -168,7 +168,7 @@ where
 
 	fn write(
 		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, buf: Vec<u8>,
-	) -> Pin<Box<dyn Future<Output = Result<(), io::Error>> + 'static + Send>> {
+	) -> AsyncResult<'static, (), io::Error> {
 		let res = self.0.write(primary_namespace, secondary_namespace, key, buf);
 
 		Box::pin(async move { res })
@@ -176,7 +176,7 @@ where
 
 	fn remove(
 		&self, primary_namespace: &str, secondary_namespace: &str, key: &str,
-	) -> Pin<Box<dyn Future<Output = Result<(), io::Error>> + 'static + Send>> {
+	) -> AsyncResult<'static, (), io::Error> {
 		let res = self.0.remove(primary_namespace, secondary_namespace, key);
 
 		Box::pin(async move { res })
@@ -184,7 +184,7 @@ where
 
 	fn list(
 		&self, primary_namespace: &str, secondary_namespace: &str,
-	) -> Pin<Box<dyn Future<Output = Result<Vec<String>, io::Error>> + 'static + Send>> {
+	) -> AsyncResult<'static, Vec<String>, io::Error> {
 		let res = self.0.list(primary_namespace, secondary_namespace);
 
 		Box::pin(async move { res })
