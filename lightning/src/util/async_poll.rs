@@ -94,10 +94,10 @@ pub(crate) fn dummy_waker() -> Waker {
 
 #[cfg(feature = "std")]
 /// A type alias for a future that returns a result of type T.
-pub type AsyncResult<'a, T> = Pin<Box<dyn Future<Output = Result<T, ()>> + 'a + Send>>;
+pub type AsyncResult<'a, T, E> = Pin<Box<dyn Future<Output = Result<T, E>> + 'a + Send>>;
 #[cfg(not(feature = "std"))]
 /// A type alias for a future that returns a result of type T.
-pub type AsyncResult<'a, T> = Pin<Box<dyn Future<Output = Result<T, ()>> + 'a>>;
+pub type AsyncResult<'a, T, E> = Pin<Box<dyn Future<Output = Result<T, E>> + 'a>>;
 
 /// Marker trait to optionally implement `Sync` under std.
 #[cfg(feature = "std")]

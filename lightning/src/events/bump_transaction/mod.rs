@@ -367,13 +367,13 @@ pub trait CoinSelectionSource {
 	fn select_confirmed_utxos<'a>(
 		&'a self, claim_id: ClaimId, must_spend: Vec<Input>, must_pay_to: &'a [TxOut],
 		target_feerate_sat_per_1000_weight: u32,
-	) -> AsyncResult<'a, CoinSelection>;
+	) -> AsyncResult<'a, CoinSelection, ()>;
 	/// Signs and provides the full witness for all inputs within the transaction known to the
 	/// trait (i.e., any provided via [`CoinSelectionSource::select_confirmed_utxos`]).
 	///
 	/// If your wallet does not support signing PSBTs you can call `psbt.extract_tx()` to get the
 	/// unsigned transaction and then sign it with your wallet.
-	fn sign_psbt<'a>(&'a self, psbt: Psbt) -> AsyncResult<'a, Transaction>;
+	fn sign_psbt<'a>(&'a self, psbt: Psbt) -> AsyncResult<'a, Transaction, ()>;
 }
 
 /// An alternative to [`CoinSelectionSource`] that can be implemented and used along [`Wallet`] to
@@ -382,17 +382,17 @@ pub trait CoinSelectionSource {
 /// For a synchronous version of this trait, see [`sync::WalletSourceSync`].
 pub trait WalletSource {
 	/// Returns all UTXOs, with at least 1 confirmation each, that are available to spend.
-	fn list_confirmed_utxos<'a>(&'a self) -> AsyncResult<'a, Vec<Utxo>>;
+	fn list_confirmed_utxos<'a>(&'a self) -> AsyncResult<'a, Vec<Utxo>, ()>;
 	/// Returns a script to use for change above dust resulting from a successful coin selection
 	/// attempt.
-	fn get_change_script<'a>(&'a self) -> AsyncResult<'a, ScriptBuf>;
+	fn get_change_script<'a>(&'a self) -> AsyncResult<'a, ScriptBuf, ()>;
 	/// Signs and provides the full [`TxIn::script_sig`] and [`TxIn::witness`] for all inputs within
 	/// the transaction known to the wallet (i.e., any provided via
 	/// [`WalletSource::list_confirmed_utxos`]).
 	///
 	/// If your wallet does not support signing PSBTs you can call `psbt.extract_tx()` to get the
 	/// unsigned transaction and then sign it with your wallet.
-	fn sign_psbt<'a>(&'a self, psbt: Psbt) -> AsyncResult<'a, Transaction>;
+	fn sign_psbt<'a>(&'a self, psbt: Psbt) -> AsyncResult<'a, Transaction, ()>;
 }
 
 /// A wrapper over [`WalletSource`] that implements [`CoinSelection`] by preferring UTXOs that would
@@ -534,7 +534,7 @@ where
 	fn select_confirmed_utxos<'a>(
 		&'a self, claim_id: ClaimId, must_spend: Vec<Input>, must_pay_to: &'a [TxOut],
 		target_feerate_sat_per_1000_weight: u32,
-	) -> AsyncResult<'a, CoinSelection> {
+	) -> AsyncResult<'a, CoinSelection, ()> {
 		Box::pin(async move {
 			let utxos = self.source.list_confirmed_utxos().await?;
 			// TODO: Use fee estimation utils when we upgrade to bitcoin v0.30.0.
@@ -584,7 +584,7 @@ where
 		})
 	}
 
-	fn sign_psbt<'a>(&'a self, psbt: Psbt) -> AsyncResult<'a, Transaction> {
+	fn sign_psbt<'a>(&'a self, psbt: Psbt) -> AsyncResult<'a, Transaction, ()> {
 		self.source.sign_psbt(psbt)
 	}
 }
