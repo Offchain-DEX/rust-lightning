@@ -24,7 +24,7 @@ pub(crate) fn compute_feerate_sat_per_1000_weight(fee_sat: u64, weight: u64) -> 
 	(fee_sat * 1000 / weight).try_into().unwrap_or(u32::max_value())
 }
 pub(crate) const fn fee_for_weight(feerate_sat_per_1000_weight: u32, weight: u64) -> u64 {
-	((feerate_sat_per_1000_weight as u64 * weight) + 1000 - 1) / 1000
+	(feerate_sat_per_1000_weight as u64 * weight).div_ceil(1000)
 }
 
 /// An interface to send a transaction to the Bitcoin network.
@@ -36,9 +36,12 @@ pub trait BroadcasterInterface {
 	/// In some cases LDK may attempt to broadcast a transaction which double-spends another
 	/// and this isn't a bug and can be safely ignored.
 	///
-	/// If more than one transaction is given, these transactions should be considered to be a
-	/// package and broadcast together. Some of the transactions may or may not depend on each other,
-	/// be sure to manage both cases correctly.
+	/// If more than one transaction is given, these transactions MUST be a
+	/// single child and its parents and be broadcast together as a package
+	/// (see the [`submitpackage`](https://bitcoincore.org/en/doc/30.0.0/rpc/rawtransactions/submitpackage)
+	/// Bitcoin Core RPC).
+	///
+	/// Implementations MUST NOT assume any topological order on the transactions.
 	///
 	/// Bitcoin transaction packages are defined in BIP 331 and here:
 	/// <https://github.com/bitcoin/bitcoin/blob/master/doc/policy/packages.md>

@@ -191,8 +191,8 @@ const REQUIRED_EXTRA_LEN: usize = ".user._bitcoin-payment.".len() + 1;
 
 /// A struct containing the two parts of a BIP 353 Human Readable Name - the user and domain parts.
 ///
-/// The `user` and `domain` parts, together, cannot exceed 231 bytes in length, and both must be
-/// non-empty.
+/// The `user` and `domain` parts combined cannot exceed 231 bytes in length;
+/// each DNS label within them must be non-empty and no longer than 63 bytes.
 ///
 /// If you intend to handle non-ASCII `user` or `domain` parts, you must handle [Homograph Attacks]
 /// and do punycode en-/de-coding yourself. This struct will always handle only plain ASCII `user`
@@ -211,16 +211,21 @@ pub struct HumanReadableName {
 impl HumanReadableName {
 	/// Constructs a new [`HumanReadableName`] from the `user` and `domain` parts. See the
 	/// struct-level documentation for more on the requirements on each.
-	pub fn new(user: &str, mut domain: &str) -> Result<HumanReadableName, ()> {
+	pub fn new(user: &str, domain: &str) -> Result<Self, ()> {
 		// First normalize domain and remove the optional trailing `.`
-		if domain.ends_with('.') {
-			domain = &domain[..domain.len() - 1];
-		}
+		let domain = domain.strip_suffix('.').unwrap_or(domain);
 		if user.len() + domain.len() + REQUIRED_EXTRA_LEN > 255 {
 			return Err(());
 		}
-		if user.is_empty() || domain.is_empty() {
-			return Err(());
+		for label in user.split('.') {
+			if label.is_empty() || label.len() > 63 {
+				return Err(());
+			}
+		}
+		for label in domain.split('.') {
+			if label.is_empty() || label.len() > 63 {
+				return Err(());
+			}
 		}
 		if !Hostname::str_is_valid_hostname(&user) || !Hostname::str_is_valid_hostname(&domain) {
 			return Err(());
@@ -228,24 +233,17 @@ impl HumanReadableName {
 		let mut contents = [0; 255 - REQUIRED_EXTRA_LEN];
 		contents[..user.len()].copy_from_slice(user.as_bytes());
 		contents[user.len()..user.len() + domain.len()].copy_from_slice(domain.as_bytes());
-		Ok(HumanReadableName {
-			contents,
-			user_len: user.len() as u8,
-			domain_len: domain.len() as u8,
-		})
+		Ok(Self { contents, user_len: user.len() as u8, domain_len: domain.len() as u8 })
 	}
 
 	/// Constructs a new [`HumanReadableName`] from the standard encoding - `user`@`domain`.
 	///
 	/// If `user` includes the standard BIP 353 ₿ prefix it is automatically removed as required by
 	/// BIP 353.
-	pub fn from_encoded(encoded: &str) -> Result<HumanReadableName, ()> {
-		if let Some((user, domain)) = encoded.strip_prefix('₿').unwrap_or(encoded).split_once("@")
-		{
-			Self::new(user, domain)
-		} else {
-			Err(())
-		}
+	pub fn from_encoded(encoded: &str) -> Result<Self, ()> {
+		let encoded = encoded.strip_prefix('₿').unwrap_or(encoded);
+		let (user, domain) = encoded.split_once('@').ok_or(())?;
+		Self::new(user, domain)
 	}
 
 	/// Gets the `user` part of this Human Readable Name
@@ -433,9 +431,9 @@ impl OMNameResolver {
 		&self, msg: DNSSECProof, context: DNSResolverContext,
 	) -> Option<(Vec<(HumanReadableName, PaymentId)>, Offer)> {
 		let (completed_requests, uri) = self.handle_dnssec_proof_for_uri(msg, context)?;
-		if let Some((_onchain, params)) = uri.split_once("?") {
-			for param in params.split("&") {
-				let (k, v) = if let Some(split) = param.split_once("=") {
+		if let Some((_onchain, params)) = uri.split_once('?') {
+			for param in params.split('&') {
+				let (k, v) = if let Some(split) = param.split_once('=') {
 					split
 				} else {
 					continue;
@@ -556,6 +554,28 @@ mod tests {
 			expected_display,
 			"HumanReadableName display format mismatch"
 		);
+	}
+
+	#[test]
+	fn test_hrn_validation() {
+		assert!(HumanReadableName::new("user", "example.com").is_ok());
+		assert!(HumanReadableName::new("user", "example.com.").is_ok());
+
+		assert!(HumanReadableName::new("user!", "example.com").is_err());
+		assert!(HumanReadableName::new("user.", "example.com").is_err());
+		assert!(HumanReadableName::new("user", "exa mple.com").is_err());
+		assert!(HumanReadableName::new("", "example.com").is_err());
+		assert!(HumanReadableName::new("user", "").is_err());
+
+		let max_label = "a".repeat(63);
+		assert!(HumanReadableName::new(&max_label, "example.com").is_ok());
+
+		let long_label = "a".repeat(64);
+		assert!(HumanReadableName::new(&long_label, "example.com").is_err());
+		let domain_with_long_label = format!("{long_label}.com");
+		assert!(HumanReadableName::new("user", &domain_with_long_label).is_err());
+		let huge_domain = format!("{max_label}.{max_label}.{max_label}.{max_label}");
+		assert!(HumanReadableName::new("user", &huge_domain).is_err());
 	}
 
 	#[test]
