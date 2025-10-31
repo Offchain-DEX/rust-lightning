@@ -337,7 +337,7 @@ mod tests {
 		use lightning::util::persist::KVStoreSyncWrapper;
 		use lightning::util::test_utils::TestStore;
 		use std::sync::Arc;
-		use std::time::Duration;
+		use web_time::Duration;
 
 		let kv_store = Arc::new(KVStoreSyncWrapper(Arc::new(TestStore::new(false))));
 		let persist_notifier = Arc::new(Notifier::new());

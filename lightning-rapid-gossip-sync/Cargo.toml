@@ -19,6 +19,8 @@ bitcoin = { version = "0.32.2", default-features = false }
 bitcoin_hashes = { version = "0.14.0", default-features = false }
 bitcoin-io = { version = "0.1.2", default-features = false }
 
+web-time = { version = "1", features = ["serde"] }
+
 [target.'cfg(ldk_bench)'.dependencies]
 criterion = { version = "0.4", optional = true, default-features = false }
 

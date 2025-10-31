@@ -19,7 +19,7 @@ use crate::sign::{NodeSigner, Recipient};
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::Hash;
 use lightning_invoice::{Bolt11Invoice, Currency, InvoiceBuilder};
-use std::time::SystemTime;
+use web_time::SystemTime;
 
 #[test]
 fn payment_metadata_end_to_end_for_invoice_with_amount() {

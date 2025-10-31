@@ -67,7 +67,7 @@ use std::thread;
 #[cfg(feature = "std")]
 use {
 	crate::util::time::Instant as TestTime,
-	std::time::{Duration, Instant, SystemTime},
+	web_time::{Duration, Instant, SystemTime},
 };
 
 #[test]

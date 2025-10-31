@@ -212,7 +212,7 @@ fn run_onion_failure_test_with_fail_intercept<F1, F2, F3>(
 				200 => callback_fail(&mut fail_msg),
 				// Trigger error in the final node and delay.
 				201 => {
-					std::thread::sleep(std::time::Duration::from_millis(200));
+					std::thread::sleep(web_time::Duration::from_millis(200));
 				},
 				_ => {},
 			}
