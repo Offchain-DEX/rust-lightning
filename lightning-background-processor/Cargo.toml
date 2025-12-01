@@ -21,6 +21,8 @@ std = ["lightning/std", "lightning-liquidity/std", "bitcoin-io/std", "bitcoin_ha
 
 
 [dependencies]
+web-time = { version = "1", features = ["serde"] }
+
 bitcoin = { version = "0.32.2", default-features = false }
 bitcoin_hashes = { version = "0.14.0", default-features = false }
 bitcoin-io = { version = "0.1.2", default-features = false }

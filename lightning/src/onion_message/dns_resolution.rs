@@ -485,7 +485,7 @@ impl OMNameResolver {
 				let mut time = self.latest_block_time.load(Ordering::Acquire) as u64;
 				#[cfg(feature = "std")]
 				{
-					use std::time::{SystemTime, UNIX_EPOCH};
+					use web_time::{SystemTime, UNIX_EPOCH};
 					let now = SystemTime::now().duration_since(UNIX_EPOCH);
 					time = now.expect("Time must be > 1970").as_secs();
 				}

@@ -4649,7 +4649,7 @@ fn test_single_channel_multiple_mpp() {
 	// Finaly, we do not run this test on Winblowz because it, somehow, in 2025, does not implement
 	// actual preemptive multitasking and thinks that cooperative multitasking somehow is
 	// acceptable in the 21st century, let alone a quarter of the way into it.
-	const MAX_THREAD_INIT_TIME: std::time::Duration = std::time::Duration::from_secs(1);
+	const MAX_THREAD_INIT_TIME: web_time::Duration = web_time::Duration::from_secs(1);
 
 	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100_000, 0);
 	create_announced_chan_between_nodes_with_value(&nodes, 0, 2, 100_000, 0);
