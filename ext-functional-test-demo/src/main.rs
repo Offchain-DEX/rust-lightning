@@ -10,7 +10,7 @@ mod tests {
 	use lightning::util::test_utils::{TestSignerFactory, SIGNER_FACTORY};
 	use std::panic::catch_unwind;
 	use std::sync::Arc;
-	use std::time::Duration;
+	use web_time::Duration;
 
 	struct BrokenSignerFactory();
 

@@ -57,7 +57,7 @@ use core::{cmp, fmt};
 pub use lightning_types::routing::RoutingFees;
 
 #[cfg(feature = "std")]
-use std::time::{SystemTime, UNIX_EPOCH};
+use web_time::{SystemTime, UNIX_EPOCH};
 
 /// We remove stale channel directional info two weeks after the last update, per BOLT 7's
 /// suggestion.
@@ -199,7 +199,7 @@ where
 	// Lock order: removed_channels -> removed_nodes
 	//
 	// NOTE: In the following `removed_*` maps, we use seconds since UNIX epoch to track time instead
-	// of `std::time::Instant`s for a few reasons:
+	// of `web_time::Instant`s for a few reasons:
 	//   * We want it to be possible to do tracking in non-`std` environments where we can compare
 	//     a provided current UNIX timestamp with the time at which we started tracking.
 	//   * In the future, if we decide to persist these maps, they will already be serializable.
@@ -3063,7 +3063,7 @@ pub(crate) mod tests {
 
 		#[cfg(feature = "std")]
 		{
-			use std::time::{SystemTime, UNIX_EPOCH};
+			use web_time::{SystemTime, UNIX_EPOCH};
 
 			let tracking_time = SystemTime::now()
 				.duration_since(UNIX_EPOCH)
@@ -3479,7 +3479,7 @@ pub(crate) mod tests {
 			// We want to check that this will work even if *one* of the channel updates is recent,
 			// so we should add it with a recent timestamp.
 			assert!(network_graph.read_only().channels().get(&scid).unwrap().one_to_two.is_none());
-			use std::time::{SystemTime, UNIX_EPOCH};
+			use web_time::{SystemTime, UNIX_EPOCH};
 			let announcement_time = SystemTime::now()
 				.duration_since(UNIX_EPOCH)
 				.expect("Time must be > 1970")
@@ -3515,7 +3515,7 @@ pub(crate) mod tests {
 
 		#[cfg(feature = "std")]
 		{
-			use std::time::{SystemTime, UNIX_EPOCH};
+			use web_time::{SystemTime, UNIX_EPOCH};
 
 			let tracking_time = SystemTime::now()
 				.duration_since(UNIX_EPOCH)
@@ -3821,7 +3821,7 @@ pub(crate) mod tests {
 	#[cfg(feature = "std")]
 	fn calling_sync_routing_table() {
 		use crate::ln::msgs::Init;
-		use std::time::{SystemTime, UNIX_EPOCH};
+		use web_time::{SystemTime, UNIX_EPOCH};
 
 		let network_graph = create_network_graph();
 		let (secp_ctx, gossip_sync) = create_gossip_sync(&network_graph);

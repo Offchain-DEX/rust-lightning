@@ -2355,7 +2355,7 @@ where
 				{
 					// Forward ad-hoc gossip if the timestamp range is less than six hours ago.
 					// Otherwise, do a full sync.
-					use std::time::{SystemTime, UNIX_EPOCH};
+					use web_time::{SystemTime, UNIX_EPOCH};
 					let full_sync_threshold = SystemTime::now()
 						.duration_since(UNIX_EPOCH)
 						.expect("Time must be > 1970")
@@ -4023,14 +4023,14 @@ mod tests {
 		// Until we have std::thread::scoped we have to unsafe { turn off the borrow checker }.
 		let peers = Arc::new(create_network(2, unsafe { &*(&*cfgs as *const _) as &'static _ }));
 
-		let start_time = std::time::Instant::now();
+		let start_time = web_time::Instant::now();
 		macro_rules! spawn_thread {
 			($id: expr) => {{
 				let peers = Arc::clone(&peers);
 				let cfgs = Arc::clone(&cfgs);
 				std::thread::spawn(move || {
 					let mut ctr = 0;
-					while start_time.elapsed() < std::time::Duration::from_secs(1) {
+					while start_time.elapsed() < web_time::Duration::from_secs(1) {
 						let id_a = peers[0].node_signer.get_node_id(Recipient::Node).unwrap();
 						let mut fd_a = FileDescriptor::new($id + ctr * 3);
 						let addr_a = SocketAddress::TcpIpV4 { addr: [127, 0, 0, 1], port: 1000 };
@@ -4046,7 +4046,7 @@ mod tests {
 							break;
 						}
 
-						while start_time.elapsed() < std::time::Duration::from_secs(1) {
+						while start_time.elapsed() < web_time::Duration::from_secs(1) {
 							peers[0].process_events();
 							if fd_a.disconnect.load(Ordering::Acquire) {
 								break;
@@ -4096,7 +4096,7 @@ mod tests {
 						peers[0].socket_disconnected(&fd_a);
 						peers[1].socket_disconnected(&fd_b);
 						ctr += 1;
-						std::thread::sleep(std::time::Duration::from_micros(1));
+						std::thread::sleep(web_time::Duration::from_micros(1));
 					}
 				})
 			}};
@@ -4953,7 +4953,7 @@ mod tests {
 	#[test]
 	#[cfg(feature = "std")]
 	fn test_process_events_multithreaded() {
-		use std::time::{Duration, Instant};
+		use web_time::{Duration, Instant};
 		// `process_events` shouldn't block on another thread processing events and instead should
 		// simply signal the currently processing thread to go around the loop again.
 		// Here we test that this happens by spawning a few threads and checking that we see one go

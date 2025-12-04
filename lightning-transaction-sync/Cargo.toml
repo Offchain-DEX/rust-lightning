@@ -33,7 +33,9 @@ electrum-rustls = ["electrum"]
 electrum-rustls-ring = ["_electrum", "electrum-client/use-rustls-ring"]
 
 [dependencies]
-lightning = { version = "0.2.0", path = "../lightning", default-features = false, features = ["std"] }
+web-time = { version = "1", features = ["serde"] }
+
+lightning = { version = "0.2.0", path = "../lightning", default-features = false }
 lightning-macros = { version = "0.2", path = "../lightning-macros", default-features = false }
 bitcoin = { version = "0.32.2", default-features = false }
 futures = { version = "0.3", optional = true }
