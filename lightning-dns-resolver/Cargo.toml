@@ -10,6 +10,8 @@ edition = "2021"
 rust-version = "1.75"
 
 [dependencies]
+web-time = { version = "1", features = ["serde"] }
+
 lightning = { version = "0.3.0", path = "../lightning", default-features = false }
 lightning-types = { version = "0.4.0", path = "../lightning-types", default-features = false }
 dnssec-prover = { version = "0.6", default-features = false, features = [ "std", "tokio" ] }

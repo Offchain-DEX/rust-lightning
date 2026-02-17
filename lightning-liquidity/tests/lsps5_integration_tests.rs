@@ -44,7 +44,7 @@ use lightning_types::payment::PaymentHash;
 
 use std::str::FromStr;
 use std::sync::{Arc, RwLock};
-use std::time::Duration;
+use web_time::Duration;
 
 pub(crate) fn lsps5_test_setup_with_kv_stores<'a, 'b, 'c>(
 	nodes: Vec<Node<'a, 'b, 'c>>, time_provider: Arc<dyn TimeProvider + Send + Sync>,

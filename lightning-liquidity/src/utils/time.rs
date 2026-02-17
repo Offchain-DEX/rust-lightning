@@ -24,7 +24,7 @@ pub struct DefaultTimeProvider;
 #[cfg(feature = "time")]
 impl TimeProvider for DefaultTimeProvider {
 	fn duration_since_epoch(&self) -> Duration {
-		use std::time::{SystemTime, UNIX_EPOCH};
+		use web_time::{SystemTime, UNIX_EPOCH};
 		SystemTime::now().duration_since(UNIX_EPOCH).expect("system time before Unix epoch")
 	}
 }

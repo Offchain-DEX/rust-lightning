@@ -85,7 +85,7 @@ use std::sync::Arc;
 #[cfg(feature = "std")]
 use std::thread::{self, JoinHandle};
 #[cfg(feature = "std")]
-use std::time::Instant;
+use web_time::Instant;
 
 #[cfg(not(feature = "std"))]
 use alloc::boxed::Box;
@@ -784,7 +784,7 @@ use futures_util::{dummy_waker, Joiner, OptionalSelector, Selector, SelectorOutp
 /// # use lightning::events::ReplayEvent;
 /// # use std::sync::{Arc, RwLock};
 /// # use std::sync::atomic::{AtomicBool, Ordering};
-/// # use std::time::SystemTime;
+/// # use web_time::SystemTime;
 /// # use lightning_background_processor::{process_events_async, GossipSync};
 /// # use core::future::Future;
 /// # use core::pin::Pin;
@@ -812,7 +812,7 @@ use futures_util::{dummy_waker, Joiner, OptionalSelector, Selector, SelectorOutp
 /// #
 /// # impl TimeProvider for DefaultTimeProvider {
 /// #    fn duration_since_epoch(&self) -> Duration {
-/// #        use std::time::{SystemTime, UNIX_EPOCH};
+/// #        use web_time::{SystemTime, UNIX_EPOCH};
 /// #        SystemTime::now().duration_since(UNIX_EPOCH).expect("system time before Unix epoch")
 /// #    }
 /// # }
@@ -1609,7 +1609,7 @@ impl BackgroundProcessor {
 					handle_network_graph_update(network_graph, &event)
 				}
 				if let Some(ref scorer) = scorer {
-					use std::time::SystemTime;
+					use web_time::SystemTime;
 					let duration_since_epoch = SystemTime::now()
 						.duration_since(SystemTime::UNIX_EPOCH)
 						.expect("Time should be sometime after 1970");
@@ -1765,8 +1765,8 @@ impl BackgroundProcessor {
 				if should_prune {
 					// The network graph must not be pruned while rapid sync completion is pending
 					if let Some(network_graph) = gossip_sync.prunable_network_graph() {
-						let duration_since_epoch = std::time::SystemTime::now()
-							.duration_since(std::time::SystemTime::UNIX_EPOCH)
+						let duration_since_epoch = web_time::SystemTime::now()
+							.duration_since(web_time::SystemTime::UNIX_EPOCH)
 							.expect("Time should be sometime after 1970");
 
 						log_trace!(logger, "Pruning and persisting network graph.");
@@ -1787,8 +1787,8 @@ impl BackgroundProcessor {
 				}
 				if !have_decayed_scorer {
 					if let Some(ref scorer) = scorer {
-						let duration_since_epoch = std::time::SystemTime::now()
-							.duration_since(std::time::SystemTime::UNIX_EPOCH)
+						let duration_since_epoch = web_time::SystemTime::now()
+							.duration_since(web_time::SystemTime::UNIX_EPOCH)
 							.expect("Time should be sometime after 1970");
 						log_trace!(logger, "Calling time_passed on scorer at startup");
 						scorer.write_lock().time_passed(duration_since_epoch);
@@ -1797,8 +1797,8 @@ impl BackgroundProcessor {
 				}
 				if last_scorer_persist_call.elapsed() > SCORER_PERSIST_TIMER {
 					if let Some(ref scorer) = scorer {
-						let duration_since_epoch = std::time::SystemTime::now()
-							.duration_since(std::time::SystemTime::UNIX_EPOCH)
+						let duration_since_epoch = web_time::SystemTime::now()
+							.duration_since(web_time::SystemTime::UNIX_EPOCH)
 							.expect("Time should be sometime after 1970");
 						log_trace!(logger, "Calling time_passed and persisting scorer");
 						scorer.write_lock().time_passed(duration_since_epoch);
@@ -1979,8 +1979,8 @@ mod tests {
 	use std::path::PathBuf;
 	use std::sync::mpsc::SyncSender;
 	use std::sync::Arc;
-	use std::time::Duration;
 	use std::{env, fs};
+	use web_time::Duration;
 
 	const EVENT_DEADLINE: Duration =
 		Duration::from_millis(5 * (FRESHNESS_TIMER.as_millis() as u64));
@@ -2775,7 +2775,7 @@ mod tests {
 	/// operations for the given node. Panics if the pending count does not reach zero
 	/// within `EVENT_DEADLINE`.
 	fn wait_for_flushed(chain_monitor: &ChainMonitor) {
-		let start = std::time::Instant::now();
+		let start = web_time::Instant::now();
 		while chain_monitor.pending_operation_count() > 0 {
 			assert!(
 				start.elapsed() < EVENT_DEADLINE,

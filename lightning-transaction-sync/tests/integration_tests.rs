@@ -24,7 +24,7 @@ use electrsd::{corepc_node, ElectrsD};
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::sync::Mutex;
-use std::time::Duration;
+use web_time::Duration;
 
 pub fn setup_bitcoind_and_electrsd() -> (BitcoinD, ElectrsD) {
 	let bitcoind_exe =

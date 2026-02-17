@@ -21,6 +21,8 @@ rpc-client = [ "serde_json", "dep:bitreq" ]
 tokio = [ "dep:tokio", "bitreq?/async" ]
 
 [dependencies]
+web-time = { version = "1", features = ["serde"] }
+
 bitcoin = "0.32.2"
 lightning = { version = "0.3.0", path = "../lightning" }
 tokio = { version = "1.35", features = [ "io-util", "net", "time", "rt" ], optional = true }

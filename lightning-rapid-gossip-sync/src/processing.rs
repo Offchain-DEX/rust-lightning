@@ -17,7 +17,7 @@ use lightning::{log_debug, log_given_level, log_gossip, log_trace, log_warn};
 use crate::{GraphSyncError, RapidGossipSync};
 
 #[cfg(all(feature = "std", not(test)))]
-use std::time::{SystemTime, UNIX_EPOCH};
+use web_time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(all(not(feature = "std"), not(test)))]
 use alloc::{borrow::ToOwned, vec::Vec};
