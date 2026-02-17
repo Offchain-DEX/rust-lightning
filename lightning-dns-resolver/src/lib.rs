@@ -174,7 +174,7 @@ mod test {
 	use lightning_types::string::UntrustedString;
 
 	use std::sync::Mutex;
-	use std::time::{Duration, Instant, SystemTime};
+	use web_time::{Duration, Instant, SystemTime};
 
 	struct TestLogger {
 		node: &'static str,

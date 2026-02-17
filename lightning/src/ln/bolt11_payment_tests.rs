@@ -16,7 +16,7 @@ use crate::ln::msgs::ChannelMessageHandler;
 use crate::ln::outbound_payment::Bolt11PaymentError;
 use crate::sign::{NodeSigner, Recipient};
 use lightning_invoice::{Bolt11Invoice, Currency, InvoiceBuilder};
-use std::time::SystemTime;
+use web_time::SystemTime;
 
 #[test]
 fn payment_metadata_end_to_end_for_invoice_with_amount() {

@@ -23,7 +23,7 @@ use crate::prelude::*;
 #[cfg(feature = "std")]
 use crate::sync::Condvar;
 #[cfg(feature = "std")]
-use std::time::Duration;
+use web_time::Duration;
 
 use core::future::Future as StdFuture;
 use core::pin::Pin;

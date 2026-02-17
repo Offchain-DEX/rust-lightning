@@ -2809,7 +2809,7 @@ pub mod benches {
 	use std::sync::mpsc::TryRecvError;
 	use std::sync::{mpsc, Arc};
 	use std::thread;
-	use std::time::Duration;
+	use web_time::Duration;
 
 	use criterion::Criterion;
 

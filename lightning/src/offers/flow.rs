@@ -186,8 +186,8 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 		#[cfg(not(feature = "std"))]
 		let now = Duration::from_secs(self.highest_seen_timestamp.load(Ordering::Acquire) as u64);
 		#[cfg(feature = "std")]
-		let now = std::time::SystemTime::now()
-			.duration_since(std::time::SystemTime::UNIX_EPOCH)
+		let now = web_time::SystemTime::now()
+			.duration_since(web_time::SystemTime::UNIX_EPOCH)
 			.expect("SystemTime::now() should come after SystemTime::UNIX_EPOCH");
 		now
 	}

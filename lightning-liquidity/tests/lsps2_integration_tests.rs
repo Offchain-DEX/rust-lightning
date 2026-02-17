@@ -52,7 +52,7 @@ use lightning_types::payment::PaymentPreimage;
 
 use std::str::FromStr;
 use std::sync::Arc;
-use std::time::Duration;
+use web_time::Duration;
 
 const MAX_PENDING_REQUESTS_PER_PEER: usize = 10;
 const MAX_TOTAL_PENDING_REQUESTS: usize = 1000;

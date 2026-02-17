@@ -48,7 +48,7 @@ use std::pin::{pin, Pin};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{self, Poll};
-use std::time::Duration;
+use web_time::Duration;
 
 static ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -798,7 +798,7 @@ mod tests {
 	use std::mem;
 	use std::sync::atomic::{AtomicBool, Ordering};
 	use std::sync::{Arc, Mutex};
-	use std::time::Duration;
+	use web_time::Duration;
 
 	struct MsgHandler {
 		expected_pubkey: PublicKey,

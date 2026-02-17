@@ -36,7 +36,7 @@ use bitcoin::secp256k1::PublicKey;
 
 use core::time::Duration;
 #[cfg(feature = "time")]
-use std::time::{SystemTime, UNIX_EPOCH};
+use web_time::{SystemTime, UNIX_EPOCH};
 
 use serde::de::{self, MapAccess, Visitor};
 use serde::ser::SerializeStruct;
