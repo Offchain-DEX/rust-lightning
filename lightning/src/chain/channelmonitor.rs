@@ -1211,6 +1211,36 @@ impl_ser_tlv_based!(FundingScope, {
 	(13, contribution, option),
 });
 
+/// A pending side-store operation describing a delta to the externalized
+/// `counterparty_claimable_outpoints` map of the primary [`FundingScope`].
+///
+/// When claim-data externalization is enabled (see
+/// [`ChannelMonitor::set_claim_data_externalized`]), the monitor stops serializing the
+/// (potentially unbounded) `counterparty_claimable_outpoints` map into its blob and instead records
+/// these deltas for the persister to write into a backend-agnostic side store, atomically with the
+/// (thin) monitor bytes. The map is still kept fully resident in RAM, so claim/balance logic is
+/// byte-identical to the non-externalized path.
+///
+/// Only deltas for the primary `FundingScope` are emitted; `pending_funding` (splice) scopes remain
+/// serialized in full inside the monitor blob.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum ClaimPersistOp {
+	/// A new counterparty commitment was provided; append its claimable outpoints under `txid`.
+	Append {
+		/// The counterparty commitment transaction id.
+		txid: Txid,
+		/// The claimable HTLC outputs (with their sources, when still relevant) for `txid`.
+		htlcs: Vec<(HTLCOutputInCommitment, Option<Box<HTLCSource>>)>,
+	},
+	/// A counterparty commitment was revoked; null out the HTLC sources stored under `txid`. The
+	/// payment-hash-bearing `HTLCOutputInCommitment`s are retained (we still need them to claim a
+	/// broadcast of the revoked commitment), only the `HTLCSource`s are dropped.
+	NullSources {
+		/// The (now-revoked) counterparty commitment transaction id.
+		txid: Txid,
+	},
+}
+
 #[derive(Clone, PartialEq)]
 pub(crate) struct ChannelMonitorImpl<Signer: EcdsaChannelSigner> {
 	funding: FundingScope,
@@ -1395,6 +1425,20 @@ pub(crate) struct ChannelMonitorImpl<Signer: EcdsaChannelSigner> {
 	/// expires. This is used to tell us we already generated an event to fail this HTLC back
 	/// during a previous block scan. Not serialized.
 	pub(crate) failed_back_htlc_ids: HashSet<SentHTLCId>,
+
+	/// In-memory only. When `true`, the primary `funding.counterparty_claimable_outpoints` map is
+	/// NOT serialized into the monitor blob (a 0-length placeholder is written and an is-thin marker
+	/// TLV is set); instead the persister mirrors it into a backend-agnostic side store via the
+	/// deltas recorded in `pending_claim_persist`. The map remains fully resident in RAM, so
+	/// claim/balance logic is byte-identical to the non-externalized path. Default `false` ⇒
+	/// upstream-identical behavior. Not serialized.
+	pub(crate) claim_data_externalized: bool,
+
+	/// In-memory only. Deltas to the externalized `counterparty_claimable_outpoints` map (of the
+	/// primary `FundingScope`) accumulated since the last persist, to be written to the side store
+	/// atomically with the monitor blob. Only populated when `claim_data_externalized` is `true`.
+	/// Drained by [`ChannelMonitor::take_pending_claim_persist`]. Not serialized.
+	pub(crate) pending_claim_persist: Vec<ClaimPersistOp>,
 
 	// The auxiliary HTLC data associated with a holder commitment transaction. This includes
 	// non-dust HTLC sources, along with dust HTLCs and their sources. Note that this assumes any
@@ -1982,6 +2026,9 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 			balances_empty_height: None,
 
 			failed_back_htlc_ids: new_hash_set(),
+
+			claim_data_externalized: false,
+			pending_claim_persist: Vec::new(),
 
 			// There are never any HTLCs in the initial commitment transaction
 			current_holder_htlc_data: CommitmentHTLCData::new(),
@@ -2857,6 +2904,54 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 }
 
 impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
+	/// Enables or disables externalization of the `counterparty_claimable_outpoints` claim data of
+	/// the primary `FundingScope`.
+	///
+	/// When enabled, the monitor stops serializing that (potentially unbounded) map into its blob,
+	/// writing a 0-length placeholder plus an is-thin marker instead, and records side-store deltas
+	/// retrievable via [`Self::take_pending_claim_persist`]. The map stays fully resident in RAM, so
+	/// claim/balance logic is unchanged. The persister is responsible for durably mirroring the map
+	/// into a backend-agnostic side store atomically with the (thin) monitor bytes, and for
+	/// repopulating it via [`Self::provide_claim_data`] after reading the monitor.
+	///
+	/// This must only be enabled once the persister side-store wiring is in place. Defaults to
+	/// `false` (upstream-identical serialization).
+	pub fn set_claim_data_externalized(&self, externalized: bool) {
+		self.inner.lock().unwrap().claim_data_externalized = externalized;
+	}
+
+	/// Drains and returns the side-store deltas accumulated since the last call.
+	///
+	/// Called by the persister at persist time; the returned ops must be written to the side store
+	/// atomically with the (thin) monitor bytes. Empty unless [`Self::set_claim_data_externalized`]
+	/// has been enabled.
+	pub fn take_pending_claim_persist(&self) -> Vec<ClaimPersistOp> {
+		core::mem::take(&mut self.inner.lock().unwrap().pending_claim_persist)
+	}
+
+	/// Repopulates the in-memory `counterparty_claimable_outpoints` map of the primary
+	/// `FundingScope` from the side store after reading a thin (externalized) monitor.
+	///
+	/// Must be called before the monitor is used for claim/balance logic, replacing the (empty, when
+	/// thin) map loaded from the blob.
+	pub fn provide_claim_data(
+		&self, claim_data: HashMap<Txid, Vec<(HTLCOutputInCommitment, Option<Box<HTLCSource>>)>>,
+	) {
+		self.inner.lock().unwrap().funding.counterparty_claimable_outpoints = claim_data;
+	}
+
+	/// Provides read access to the full in-memory `counterparty_claimable_outpoints` map of the
+	/// primary `FundingScope`, for a one-time fat→thin migration of the side store.
+	///
+	/// The closure is invoked while the monitor lock is held; it should copy the entries it needs
+	/// into the side store and return promptly.
+	pub fn counterparty_claimable_outpoints_for_migration<R>(
+		&self,
+		f: impl FnOnce(&HashMap<Txid, Vec<(HTLCOutputInCommitment, Option<Box<HTLCSource>>)>>) -> R,
+	) -> R {
+		f(&self.inner.lock().unwrap().funding.counterparty_claimable_outpoints)
+	}
+
 	/// Gets the balances in this channel which are either claimable by us if we were to
 	/// force-close the channel now or which are claimable on-chain (possibly awaiting
 	/// confirmation).
@@ -3425,6 +3520,12 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 
 		// Prune HTLCs from the previous counterparty commitment tx so we don't generate failure/fulfill
 		// events for now-revoked/fulfilled HTLCs.
+		// Capture the primary `FundingScope`'s txids before the prune closure clears `prev` below, so
+		// we can mirror the source-nulling into the side store. Only the primary scope is externalized;
+		// `pending_funding` scopes stay serialized in full.
+		let externalized = self.claim_data_externalized;
+		let primary_prev_counterparty_commitment_txid = self.funding.prev_counterparty_commitment_txid;
+		let primary_cur_counterparty_commitment_txid = self.funding.current_counterparty_commitment_txid;
 		let mut removed_fulfilled_htlcs = false;
 		let prune_htlc_sources = |funding: &mut FundingScope| {
 			if let Some(txid) = funding.prev_counterparty_commitment_txid.take() {
@@ -3454,6 +3555,16 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			}
 		};
 		core::iter::once(&mut self.funding).chain(&mut self.pending_funding).for_each(prune_htlc_sources);
+
+		// Mirror the source-nulling of the primary scope's prev commitment into the side store. This
+		// reproduces the closure's nulling condition above (prev existed and differs from current).
+		if externalized {
+			if let Some(txid) = primary_prev_counterparty_commitment_txid {
+				if primary_cur_counterparty_commitment_txid != Some(txid) {
+					self.pending_claim_persist.push(ClaimPersistOp::NullSources { txid });
+				}
+			}
+		}
 
 		if !self.payment_preimages.is_empty() {
 			let min_idx = self.get_min_seen_secret();
@@ -3522,6 +3633,11 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 
 		self.funding.prev_counterparty_commitment_txid = self.funding.current_counterparty_commitment_txid.take();
 		self.funding.current_counterparty_commitment_txid = Some(txid);
+		if self.claim_data_externalized {
+			// Mirror the insert into the side store. Clone before the move below so the in-memory map
+			// (and thus claim/balance logic) stays byte-identical to the non-externalized path.
+			self.pending_claim_persist.push(ClaimPersistOp::Append { txid, htlcs: htlc_outputs.clone() });
+		}
 		self.funding.counterparty_claimable_outpoints.insert(txid, htlc_outputs);
 		self.current_counterparty_commitment_number = commitment_number;
 
@@ -6945,6 +7061,9 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			initial_counterparty_commitment_tx,
 			balances_empty_height,
 			failed_back_htlc_ids: new_hash_set(),
+
+			claim_data_externalized: false,
+			pending_claim_persist: Vec::new(),
 
 			current_holder_htlc_data,
 			prev_holder_htlc_data,
