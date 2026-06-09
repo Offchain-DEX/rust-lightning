@@ -34,7 +34,11 @@ electrum-rustls-ring = ["_electrum", "electrum-client/use-rustls-ring"]
 
 [dependencies]
 web-time = { version = "1", features = ["serde"] }
-lightning = { version = "0.3.0", path = "../lightning", default-features = false, features = ["std"] }
+# NOTE(fork): upstream forces `lightning/std` here, but that unifies `lightning/std` across the
+# whole graph and makes `MaybeSend = Send` on wasm32 (single-threaded), breaking the async
+# `KVStore`/`Persist` with non-`Send` browser backends. Keep it default-off (as pre-bump) so wasm
+# builds; native builds still get `lightning/std` via feature unification from other crates.
+lightning = { version = "0.3.0", path = "../lightning", default-features = false }
 lightning-macros = { version = "0.2", path = "../lightning-macros", default-features = false }
 bitcoin = { version = "0.32.2", default-features = false }
 futures = { version = "0.3", optional = true }
