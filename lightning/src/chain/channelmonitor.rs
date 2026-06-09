@@ -1239,13 +1239,69 @@ pub enum ClaimPersistOp {
 		/// The claimable HTLC outputs (with their sources, when still relevant) for `txid`.
 		htlcs: Vec<(HTLCOutputInCommitment, Option<Box<HTLCSource>>)>,
 	},
-	/// A counterparty commitment was revoked; null out the HTLC sources stored under `txid`. The
-	/// payment-hash-bearing `HTLCOutputInCommitment`s are retained (we still need them to claim a
-	/// broadcast of the revoked commitment), only the `HTLCSource`s are dropped.
+	/// A counterparty commitment was revoked; the HTLC sources stored under `txid` have been
+	/// nulled. The payment-hash-bearing `HTLCOutputInCommitment`s are retained (we still need them
+	/// to claim a broadcast of the revoked commitment), only the `HTLCSource`s are dropped. The
+	/// carried `htlcs` is the resulting (source-stripped) entry, so the persister can overwrite the
+	/// side-store value for `txid` without a read-modify-write.
 	NullSources {
 		/// The (now-revoked) counterparty commitment transaction id.
 		txid: Txid,
+		/// The resulting source-stripped claimable HTLC outputs for `txid`.
+		htlcs: Vec<(HTLCOutputInCommitment, Option<Box<HTLCSource>>)>,
 	},
+}
+
+impl ClaimPersistOp {
+	/// The counterparty commitment transaction id this op writes (the side-store key).
+	pub fn txid(&self) -> Txid {
+		match self {
+			ClaimPersistOp::Append { txid, .. } => *txid,
+			ClaimPersistOp::NullSources { txid, .. } => *txid,
+		}
+	}
+
+	/// Consumes the op into its `(txid, htlcs)` parts. For both variants `htlcs` is the full
+	/// side-store value to durably write under `txid` (sources present for `Append`, stripped for
+	/// `NullSources`).
+	pub fn into_parts(self) -> (Txid, Vec<(HTLCOutputInCommitment, Option<Box<HTLCSource>>)>) {
+		match self {
+			ClaimPersistOp::Append { txid, htlcs } => (txid, htlcs),
+			ClaimPersistOp::NullSources { txid, htlcs } => (txid, htlcs),
+		}
+	}
+}
+
+/// Serializes the externalized claim-data side-store value for a single counterparty commitment:
+/// the list of its claimable HTLC outputs and (optionally) their sources.
+///
+/// The encoding mirrors the in-blob layout (`HTLCOutputInCommitment` followed by an
+/// `Option<HTLCSource>`), so [`read_claim_htlcs`] reconstructs exactly what
+/// [`ChannelMonitor::provide_claim_data`] expects. Used by the persister to write the
+/// `MonitorUpdatingPersisterAsync` side store; see [`ClaimPersistOp`].
+pub fn write_claim_htlcs<W: Writer>(
+	htlcs: &[(HTLCOutputInCommitment, Option<Box<HTLCSource>>)], writer: &mut W,
+) -> Result<(), Error> {
+	(htlcs.len() as u64).write(writer)?;
+	for (htlc, source) in htlcs {
+		htlc.write(writer)?;
+		source.as_ref().map(|b| b.as_ref()).write(writer)?;
+	}
+	Ok(())
+}
+
+/// Deserializes a claim-data side-store value written by [`write_claim_htlcs`].
+pub fn read_claim_htlcs<R: io::Read>(
+	reader: &mut R,
+) -> Result<Vec<(HTLCOutputInCommitment, Option<Box<HTLCSource>>)>, DecodeError> {
+	let len: u64 = Readable::read(reader)?;
+	let mut res = Vec::with_capacity(cmp::min(len as usize, MAX_ALLOC_SIZE / 64));
+	for _ in 0..len {
+		let htlc: HTLCOutputInCommitment = Readable::read(reader)?;
+		let source: Option<HTLCSource> = Readable::read(reader)?;
+		res.push((htlc, source.map(Box::new)));
+	}
+	Ok(res)
 }
 
 #[derive(Clone, PartialEq)]
@@ -3595,7 +3651,15 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		if externalized {
 			if let Some(txid) = primary_prev_counterparty_commitment_txid {
 				if primary_cur_counterparty_commitment_txid != Some(txid) {
-					self.pending_claim_persist.push(ClaimPersistOp::NullSources { txid });
+					// Capture the now source-stripped entry so the persister can overwrite the
+					// side-store value for `txid` directly.
+					let htlcs = self
+						.funding
+						.counterparty_claimable_outpoints
+						.get(&txid)
+						.cloned()
+						.unwrap_or_default();
+					self.pending_claim_persist.push(ClaimPersistOp::NullSources { txid, htlcs });
 				}
 			}
 		}

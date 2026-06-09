@@ -31,7 +31,7 @@ use crate::{io, log_error};
 use crate::chain;
 use crate::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
 use crate::chain::chainmonitor::Persist;
-use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate};
+use crate::chain::channelmonitor::{write_claim_htlcs, ChannelMonitor, ChannelMonitorUpdate};
 use crate::chain::transaction::OutPoint;
 use crate::chain::BlockLocator;
 use crate::ln::types::ChannelId;
@@ -71,6 +71,15 @@ pub const CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE: &str = "monitors";
 pub const CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE: &str = "";
 /// The primary namespace under which [`ChannelMonitorUpdate`]s will be persisted.
 pub const CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE: &str = "monitor_updates";
+
+/// The primary namespace under which externalized counterparty-claim data is persisted (one key
+/// per counterparty commitment txid, grouped by monitor key in the secondary namespace). Only
+/// written when a monitor has claim-data externalization enabled; see
+/// [`ChannelMonitor::set_claim_data_externalized`] and [`ClaimPersistOp`].
+///
+/// [`ChannelMonitor::set_claim_data_externalized`]: crate::chain::channelmonitor::ChannelMonitor::set_claim_data_externalized
+/// [`ClaimPersistOp`]: crate::chain::channelmonitor::ClaimPersistOp
+pub const CHANNEL_MONITOR_CLAIM_PERSISTENCE_PRIMARY_NAMESPACE: &str = "monitor_claims";
 
 /// The primary namespace under which archived [`ChannelMonitor`]s will be persisted.
 pub const ARCHIVED_CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE: &str = "archived_monitors";
@@ -1544,15 +1553,55 @@ impl<
 			monitor_bytes.extend_from_slice(MONITOR_UPDATING_PERSISTER_PREPEND_SENTINEL);
 		}
 		monitor.write(&mut monitor_bytes).unwrap();
+		// Write-ahead the externalized claim deltas (if any): we call `kv_store.write` for the claim
+		// keys BEFORE the monitor blob and await them first, so the (thin) monitor can never become
+		// durable referencing a commitment whose claim data isn't. No-op (empty vec) unless claim-data
+		// externalization is enabled. See `ClaimPersistOp` / `set_claim_data_externalized`.
+		let claim_write_futs = self.claim_write_futures(&monitor_key, monitor);
 		// Note that this is NOT an async function, but rather calls the *sync* KVStore write
 		// method, allowing it to do its queueing immediately, and then return a future for the
 		// completion of the write. This ensures monitor persistence ordering is preserved.
 		let primary = CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE;
 		let secondary = CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE;
+		let monitor_write_fut =
+			self.kv_store.write(primary, secondary, monitor_key.as_str(), monitor_bytes);
 		// There's no real reason why this needs to be boxed, but dropping it rams into the "hidden
 		// type for impl... captures lifetime that does not appear in bounds" issue. This can
 		// trivially be dropped once we upgrade to edition 2024/MSRV 1.85.
-		Box::pin(self.kv_store.write(primary, secondary, monitor_key.as_str(), monitor_bytes))
+		Box::pin(async move {
+			for fut in claim_write_futs {
+				fut.await?;
+			}
+			monitor_write_fut.await
+		})
+	}
+
+	/// Builds the side-store write futures for a monitor's pending externalized claim deltas,
+	/// draining them from the monitor. Returns an empty vec when claim-data externalization is
+	/// disabled, so callers stay byte-for-byte identical to upstream in the default case.
+	///
+	/// The futures must be awaited BEFORE the monitor blob/update write (and `kv_store.write` is
+	/// called here, before the monitor write, so the synchronous-call ordering is also correct for
+	/// `KVStore` backends that assign write order at call time).
+	fn claim_write_futures<ChannelSigner: EcdsaChannelSigner>(
+		&self, monitor_key: &str, monitor: &ChannelMonitor<ChannelSigner>,
+	) -> Vec<Pin<Box<dyn MaybeSendableFuture<Output = Result<(), io::Error>> + 'static>>> {
+		if !monitor.is_claim_data_externalized() {
+			return Vec::new();
+		}
+		let primary = CHANNEL_MONITOR_CLAIM_PERSISTENCE_PRIMARY_NAMESPACE;
+		monitor
+			.take_pending_claim_persist()
+			.into_iter()
+			.map(|op| {
+				let (txid, htlcs) = op.into_parts();
+				let mut value = Vec::new();
+				write_claim_htlcs(&htlcs, &mut value).expect("writing to a Vec is infallible");
+				let fut = self.kv_store.write(primary, monitor_key, &txid.to_string(), value);
+				Box::pin(fut)
+					as Pin<Box<dyn MaybeSendableFuture<Output = Result<(), io::Error>> + 'static>>
+			})
+			.collect()
 	}
 
 	fn update_persisted_channel<'a, ChannelSigner: EcdsaChannelSigner + 'a>(
@@ -1574,12 +1623,20 @@ impl<
 				let monitor_key = monitor_name.to_string();
 				let update_name = UpdateName::from(update.update_id);
 				let primary = CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE;
+				// Write-ahead the externalized claim deltas (if any) for this update: their
+				// `kv_store.write`s are issued (and below, awaited) BEFORE the monitor update write,
+				// so the update can never become durable referencing a commitment whose claim data
+				// isn't. No-op unless claim-data externalization is enabled.
+				let claim_write_futs = self.claim_write_futures(&monitor_key, monitor);
 				// Note that this is NOT an async function, but rather calls the *sync* KVStore
 				// write method, allowing it to do its queueing immediately, and then return a
 				// future for the completion of the write. This ensures monitor persistence
 				// ordering is preserved.
 				let encoded = update.encode();
 				res_a = Some(async move {
+					for fut in claim_write_futs {
+						fut.await?;
+					}
 					self.kv_store.write(primary, &monitor_key, update_name.as_str(), encoded).await
 				});
 			} else {
