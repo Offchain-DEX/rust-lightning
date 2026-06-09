@@ -94,7 +94,7 @@ impl<L: Logger> EsploraSyncClient<L> {
 
 		log_trace!(self.logger, "Starting transaction sync.");
 		#[cfg(feature = "time")]
-		let start_time = std::time::Instant::now();
+		let start_time = web_time::Instant::now();
 		let mut num_confirmed = 0;
 		let mut num_unconfirmed = 0;
 

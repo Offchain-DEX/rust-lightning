@@ -36,7 +36,7 @@
 //!
 //! # use lightning::blinded_path::message::BlindedMessagePath;
 //! # #[cfg(feature = "std")]
-//! # use std::time::SystemTime;
+//! # use web_time::SystemTime;
 //! #
 //! # fn create_blinded_path() -> BlindedMessagePath { unimplemented!() }
 //! # fn create_another_blinded_path() -> BlindedMessagePath { unimplemented!() }
@@ -124,7 +124,7 @@ use crate::offers::invoice::{
 use crate::prelude::*;
 
 #[cfg(feature = "std")]
-use std::time::SystemTime;
+use web_time::SystemTime;
 
 pub(super) const IV_BYTES_WITH_METADATA: &[u8; IV_LEN] = b"LDK Refund ~~~~~";
 pub(super) const IV_BYTES_WITHOUT_METADATA: &[u8; IV_LEN] = b"LDK Refund v2~~~";
@@ -559,7 +559,7 @@ impl Refund {
 
 macro_rules! respond_with_explicit_signing_pubkey_methods { ($self: ident, $builder: ty) => {
 	/// Creates an [`InvoiceBuilder`] for the refund with the given required fields and using the
-	/// [`Duration`] since [`std::time::SystemTime::UNIX_EPOCH`] as the creation time.
+	/// [`Duration`] since [`web_time::SystemTime::UNIX_EPOCH`] as the creation time.
 	///
 	/// See [`Refund::respond_with_no_std`] for further details where the aforementioned creation
 	/// time is used for the `created_at` parameter.
@@ -572,8 +572,8 @@ macro_rules! respond_with_explicit_signing_pubkey_methods { ($self: ident, $buil
 		&$self, payment_paths: Vec<BlindedPaymentPath>, payment_hash: PaymentHash,
 		signing_pubkey: PublicKey,
 	) -> Result<$builder, Bolt12SemanticError> {
-		let created_at = std::time::SystemTime::now()
-			.duration_since(std::time::SystemTime::UNIX_EPOCH)
+		let created_at = web_time::SystemTime::now()
+			.duration_since(web_time::SystemTime::UNIX_EPOCH)
 			.expect("SystemTime::now() should come after SystemTime::UNIX_EPOCH");
 
 		$self.respond_with_no_std(payment_paths, payment_hash, signing_pubkey, created_at)
@@ -583,7 +583,7 @@ macro_rules! respond_with_explicit_signing_pubkey_methods { ($self: ident, $buil
 	///
 	/// Unless [`InvoiceBuilder::relative_expiry`] is set, the invoice will expire two hours after
 	/// `created_at`, which is used to set [`Bolt12Invoice::created_at`].
-	#[cfg_attr(feature = "std", doc = "Useful for non-`std` builds where [`std::time::SystemTime`] is not available.")]
+	#[cfg_attr(feature = "std", doc = "Useful for non-`std` builds where [`web_time::SystemTime`] is not available.")]
 	///
 	/// The caller is expected to remember the preimage of `payment_hash` in order to
 	/// claim a payment for the invoice.
@@ -627,8 +627,8 @@ macro_rules! respond_with_derived_signing_pubkey_methods { ($self: ident, $build
 		&$self, payment_paths: Vec<BlindedPaymentPath>, payment_hash: PaymentHash,
 		expanded_key: &ExpandedKey, entropy_source: ES
 	) -> Result<$builder, Bolt12SemanticError> {
-		let created_at = std::time::SystemTime::now()
-			.duration_since(std::time::SystemTime::UNIX_EPOCH)
+		let created_at = web_time::SystemTime::now()
+			.duration_since(web_time::SystemTime::UNIX_EPOCH)
 			.expect("SystemTime::now() should come after SystemTime::UNIX_EPOCH");
 
 		$self.respond_using_derived_keys_no_std(
