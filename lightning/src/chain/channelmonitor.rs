@@ -7655,5 +7655,93 @@ mod tests {
 		log_info!(context_logger, "This is an error");
 		logger.assert_log_context_contains("lightning::chain::channelmonitor::tests", Some(dummy_key), Some(chan_id), 6);
 	}
+
+	#[test]
+	#[rustfmt::skip]
+	fn test_claim_data_externalization_roundtrip() {
+		// Verifies the thin (externalized) serialization path on a real monitor: writing with the
+		// flag set drops the primary scope's `counterparty_claimable_outpoints` from the blob (a
+		// 0-length placeholder + is-thin marker), and after reading + `provide_claim_data` the
+		// in-memory map matches the fat round-trip. Also asserts the off-path (flag clear) is
+		// byte-identical and that the Append delta hook fires only once externalized.
+		use crate::ln::channelmanager::HTLCSource;
+		use bitcoin::hashes::Hash;
+
+		// Stand up a real channel and advance its state so the counterparty claim map is populated.
+		let chanmon_cfgs = create_chanmon_cfgs(2);
+		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+		let chan = create_announced_chan_between_nodes(&nodes, 0, 1);
+		send_payment(&nodes[0], &[&nodes[1]], 1_000_000);
+		send_payment(&nodes[0], &[&nodes[1]], 2_000_000);
+
+		let read_monitor = |bytes: &[u8]| {
+			<(BlockLocator, ChannelMonitor<_>)>::read(
+				&mut io::Cursor::new(bytes),
+				(&nodes[0].keys_manager.backing, &nodes[0].keys_manager.backing),
+			).unwrap().1
+		};
+
+		// Read a fat copy of the live monitor into an owned ChannelMonitor we can toggle freely
+		// (without disturbing the chain monitor's canonical copy).
+		let live_bytes = get_monitor!(nodes[0], chan.2).encode();
+		let monitor = read_monitor(&live_bytes);
+		assert!(!monitor.is_claim_data_externalized());
+		assert!(
+			!monitor.inner.lock().unwrap().funding.counterparty_claimable_outpoints.is_empty(),
+			"a used channel should have a non-empty counterparty claim map",
+		);
+
+		// Fat round-trip baseline.
+		let fat_bytes = monitor.encode();
+		let fat_map = monitor.inner.lock().unwrap().funding.counterparty_claimable_outpoints.clone();
+
+		// Thin round-trip: the map is dropped from the blob, the marker restores the flag, and the
+		// map is empty until repopulated.
+		monitor.set_claim_data_externalized(true);
+		let thin_bytes = monitor.encode();
+		assert!(
+			thin_bytes.len() < fat_bytes.len(),
+			"thin blob ({}) should be smaller than fat ({}) after dropping the claim map",
+			thin_bytes.len(), fat_bytes.len(),
+		);
+		let thin_rt = read_monitor(&thin_bytes);
+		assert!(thin_rt.is_claim_data_externalized(), "is-thin marker should restore the flag");
+		assert!(
+			thin_rt.inner.lock().unwrap().funding.counterparty_claimable_outpoints.is_empty(),
+			"thin read yields an empty map until repopulated",
+		);
+
+		// Repopulate from the "side store" (here, the fat map) and assert equality with the fat path.
+		thin_rt.provide_claim_data(fat_map.clone());
+		assert_eq!(
+			thin_rt.inner.lock().unwrap().funding.counterparty_claimable_outpoints, fat_map,
+			"repopulated thin map must equal the fat round-trip map",
+		);
+
+		// Off-path must be byte-identical: clearing the flag reproduces the fat bytes exactly.
+		monitor.set_claim_data_externalized(false);
+		assert_eq!(monitor.encode(), fat_bytes, "non-externalized serialization must be byte-identical");
+
+		// Append delta hook: once externalized, a new counterparty commitment emits exactly one
+		// Append op carrying the same (txid, htlcs) inserted into the resident map.
+		monitor.set_claim_data_externalized(true);
+		assert!(monitor.take_pending_claim_persist().is_empty());
+		let dummy_key = PublicKey::from_secret_key(
+			&Secp256k1::new(), &SecretKey::from_slice(&[42; 32]).unwrap());
+		let next_txid = Txid::from_byte_array(Sha256::hash(b"next").to_byte_array());
+		let next_htlcs: Vec<(HTLCOutputInCommitment, Option<Box<HTLCSource>>)> = vec![(
+			HTLCOutputInCommitment {
+				offered: true, amount_msat: 1_000_000, cltv_expiry: 42,
+				payment_hash: PaymentHash([9; 32]), transaction_output_index: Some(0),
+			},
+			Some(Box::new(HTLCSource::dummy())),
+		)];
+		monitor.provide_latest_counterparty_commitment_tx(next_txid, next_htlcs.clone(), 1, dummy_key);
+		let ops = monitor.take_pending_claim_persist();
+		assert_eq!(ops, vec![super::ClaimPersistOp::Append { txid: next_txid, htlcs: next_htlcs }]);
+		assert!(monitor.take_pending_claim_persist().is_empty(), "drain should leave the buffer empty");
+	}
 	// Further testing is done in the ChannelManager integration tests.
 }
