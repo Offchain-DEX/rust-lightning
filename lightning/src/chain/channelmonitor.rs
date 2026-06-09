@@ -1211,6 +1211,13 @@ impl_ser_tlv_based!(FundingScope, {
 	(13, contribution, option),
 });
 
+/// Fork-local TLV type for the is-thin marker that flags a [`ChannelMonitor`] blob as having its
+/// primary scope's `counterparty_claimable_outpoints` externalized to a side store (see
+/// [`ClaimPersistOp`] / [`ChannelMonitor::set_claim_data_externalized`]). Chosen as a high odd type
+/// so it sits well above upstream LDK's sequential TLV range (reducing future-rebase collision risk)
+/// and is skipped as an unknown odd TLV by stock LDK readers.
+const CLAIM_DATA_EXTERNALIZED_TLV_TYPE: u64 = 0xFFFF_0001;
+
 /// A pending side-store operation describing a delta to the externalized
 /// `counterparty_claimable_outpoints` map of the primary [`FundingScope`].
 ///
@@ -1653,23 +1660,31 @@ pub(crate) fn write_chanmon_internal<Signer: EcdsaChannelSigner, W: Writer>(
 		}
 	}
 
-	writer.write_all(
-		&(channel_monitor.funding.counterparty_claimable_outpoints.len() as u64).to_be_bytes(),
-	)?;
-	for (ref txid, ref htlc_infos) in
-		channel_monitor.funding.counterparty_claimable_outpoints.iter()
-	{
-		writer.write_all(&txid[..])?;
-		writer.write_all(&(htlc_infos.len() as u64).to_be_bytes())?;
-		for &(ref htlc_output, ref htlc_source) in htlc_infos.iter() {
-			debug_assert!(
-				htlc_source.is_none()
-					|| Some(**txid) == channel_monitor.funding.current_counterparty_commitment_txid
-					|| Some(**txid) == channel_monitor.funding.prev_counterparty_commitment_txid,
-				"HTLC Sources for all revoked commitment transactions should be none!"
-			);
-			serialize_htlc_in_commitment!(htlc_output);
-			htlc_source.as_ref().map(|b| b.as_ref()).write(writer)?;
+	if channel_monitor.claim_data_externalized {
+		// Externalized: the primary scope's claim map lives in a backend-agnostic side store rather
+		// than this blob. Write a 0-length placeholder; the is-thin marker TLV in the suffix tells the
+		// reader to repopulate via `provide_claim_data`. (Off-path, i.e. when not externalized, the
+		// `else` below is byte-identical to upstream.)
+		writer.write_all(&0u64.to_be_bytes())?;
+	} else {
+		writer.write_all(
+			&(channel_monitor.funding.counterparty_claimable_outpoints.len() as u64).to_be_bytes(),
+		)?;
+		for (ref txid, ref htlc_infos) in
+			channel_monitor.funding.counterparty_claimable_outpoints.iter()
+		{
+			writer.write_all(&txid[..])?;
+			writer.write_all(&(htlc_infos.len() as u64).to_be_bytes())?;
+			for &(ref htlc_output, ref htlc_source) in htlc_infos.iter() {
+				debug_assert!(
+					htlc_source.is_none()
+						|| Some(**txid) == channel_monitor.funding.current_counterparty_commitment_txid
+						|| Some(**txid) == channel_monitor.funding.prev_counterparty_commitment_txid,
+					"HTLC Sources for all revoked commitment transactions should be none!"
+				);
+				serialize_htlc_in_commitment!(htlc_output);
+				htlc_source.as_ref().map(|b| b.as_ref()).write(writer)?;
+			}
 		}
 	}
 
@@ -1792,6 +1807,15 @@ pub(crate) fn write_chanmon_internal<Signer: EcdsaChannelSigner, W: Writer>(
 			_ => channel_monitor.pending_monitor_events.clone(),
 		};
 
+	// Fork-local is-thin marker. When the primary scope's claim data is externalized (see
+	// `ChannelMonitor::set_claim_data_externalized`), the 0-length placeholder written above for
+	// `counterparty_claimable_outpoints` is "thin" (repopulate from the side store), not "genuinely
+	// empty". Written only when externalized, so the off-path serialization stays byte-identical to
+	// upstream. We use a high ODD type (`CLAIM_DATA_EXTERNALIZED_TLV_TYPE`) so it sits well above
+	// upstream's sequential range and is skipped as an unknown odd type by stock LDK readers.
+	let claim_data_externalized_marker: Option<bool> =
+		if channel_monitor.claim_data_externalized { Some(true) } else { None };
+
 	write_tlv_fields!(writer, {
 		(1, channel_monitor.funding_spend_confirmed, option),
 		(3, channel_monitor.htlcs_resolved_on_chain, required_vec),
@@ -1816,6 +1840,7 @@ pub(crate) fn write_chanmon_internal<Signer: EcdsaChannelSigner, W: Writer>(
 		(37, channel_monitor.funding_seen_onchain, required),
 		(39, channel_monitor.best_block.previous_blocks, required),
 		(41, channel_monitor.funding.contribution, option),
+		(CLAIM_DATA_EXTERNALIZED_TLV_TYPE, claim_data_externalized_marker, option),
 	});
 
 	Ok(())
@@ -2918,6 +2943,15 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 	/// `false` (upstream-identical serialization).
 	pub fn set_claim_data_externalized(&self, externalized: bool) {
 		self.inner.lock().unwrap().claim_data_externalized = externalized;
+	}
+
+	/// Whether this monitor's primary-scope claim data is currently externalized.
+	///
+	/// After reading a monitor, the loader uses this to branch: `true` ⇒ the blob was written thin,
+	/// so repopulate the in-memory map from the side store via [`Self::provide_claim_data`]; `false`
+	/// ⇒ a legacy/fat monitor whose side store should be seeded by a one-time migration.
+	pub fn is_claim_data_externalized(&self) -> bool {
+		self.inner.lock().unwrap().claim_data_externalized
 	}
 
 	/// Drains and returns the side-store deltas accumulated since the last call.
@@ -6859,6 +6893,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 		let mut funding_seen_onchain = RequiredWrapper(None);
 		let mut best_block_previous_blocks = None;
 		let mut current_funding_contribution = None;
+		let mut claim_data_externalized_marker: Option<bool> = None;
 		read_tlv_fields!(reader, {
 			(1, funding_spend_confirmed, option),
 			(3, htlcs_resolved_on_chain, optional_vec),
@@ -6883,7 +6918,14 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			(37, funding_seen_onchain, (default_value, true)),
 			(39, best_block_previous_blocks, option), // Added and always set in 0.3
 			(41, current_funding_contribution, option),
+			(CLAIM_DATA_EXTERNALIZED_TLV_TYPE, claim_data_externalized_marker, option),
 		});
+		// When the is-thin marker is present, the 0-length `counterparty_claimable_outpoints` read
+		// above is a placeholder: the real map lives in the side store and must be repopulated by the
+		// persister via `provide_claim_data` before the monitor is used. We restore the flag so
+		// subsequent persists keep thin-writing. Absent marker ⇒ legacy/fat monitor (flag stays false;
+		// the persister migrates it on load).
+		let claim_data_externalized = claim_data_externalized_marker.unwrap_or(false);
 		if let Some(previous_blocks) = best_block_previous_blocks {
 			best_block.previous_blocks = previous_blocks;
 		}
@@ -7062,7 +7104,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			balances_empty_height,
 			failed_back_htlc_ids: new_hash_set(),
 
-			claim_data_externalized: false,
+			claim_data_externalized,
 			pending_claim_persist: Vec::new(),
 
 			current_holder_htlc_data,
