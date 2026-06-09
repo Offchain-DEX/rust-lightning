@@ -1279,7 +1279,7 @@ impl ClaimPersistOp {
 /// `Option<HTLCSource>`), so [`read_claim_htlcs`] reconstructs exactly what
 /// [`ChannelMonitor::provide_claim_data`] expects. Used by the persister to write the
 /// `MonitorUpdatingPersisterAsync` side store; see [`ClaimPersistOp`].
-pub fn write_claim_htlcs<W: Writer>(
+pub(crate) fn write_claim_htlcs<W: Writer>(
 	htlcs: &[(HTLCOutputInCommitment, Option<Box<HTLCSource>>)], writer: &mut W,
 ) -> Result<(), Error> {
 	(htlcs.len() as u64).write(writer)?;
@@ -1291,7 +1291,7 @@ pub fn write_claim_htlcs<W: Writer>(
 }
 
 /// Deserializes a claim-data side-store value written by [`write_claim_htlcs`].
-pub fn read_claim_htlcs<R: io::Read>(
+pub(crate) fn read_claim_htlcs<R: io::Read>(
 	reader: &mut R,
 ) -> Result<Vec<(HTLCOutputInCommitment, Option<Box<HTLCSource>>)>, DecodeError> {
 	let len: u64 = Readable::read(reader)?;
@@ -3020,26 +3020,40 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 	}
 
 	/// Repopulates the in-memory `counterparty_claimable_outpoints` map of the primary
-	/// `FundingScope` from the side store after reading a thin (externalized) monitor.
+	/// `FundingScope` from side-store entries after reading a thin (externalized) monitor.
 	///
-	/// Must be called before the monitor is used for claim/balance logic, replacing the (empty, when
-	/// thin) map loaded from the blob.
-	pub fn provide_claim_data(
-		&self, claim_data: HashMap<Txid, Vec<(HTLCOutputInCommitment, Option<Box<HTLCSource>>)>>,
-	) {
-		self.inner.lock().unwrap().funding.counterparty_claimable_outpoints = claim_data;
+	/// Each entry is `(commitment_txid, bytes)` where `bytes` was produced by the persister's
+	/// write-ahead side-store writes (the same codec used internally). Must be called before the
+	/// monitor is used for claim/balance logic; it replaces the (empty, when thin) map loaded from
+	/// the blob.
+	pub fn provide_claim_data_serialized(
+		&self, entries: Vec<(Txid, Vec<u8>)>,
+	) -> Result<(), DecodeError> {
+		let mut map = hash_map_with_capacity(entries.len());
+		for (txid, bytes) in entries {
+			let htlcs = read_claim_htlcs(&mut &bytes[..])?;
+			map.insert(txid, htlcs);
+		}
+		self.inner.lock().unwrap().funding.counterparty_claimable_outpoints = map;
+		Ok(())
 	}
 
-	/// Provides read access to the full in-memory `counterparty_claimable_outpoints` map of the
-	/// primary `FundingScope`, for a one-time fat→thin migration of the side store.
-	///
-	/// The closure is invoked while the monitor lock is held; it should copy the entries it needs
-	/// into the side store and return promptly.
-	pub fn counterparty_claimable_outpoints_for_migration<R>(
-		&self,
-		f: impl FnOnce(&HashMap<Txid, Vec<(HTLCOutputInCommitment, Option<Box<HTLCSource>>)>>) -> R,
-	) -> R {
-		f(&self.inner.lock().unwrap().funding.counterparty_claimable_outpoints)
+	/// Serializes the full in-memory `counterparty_claimable_outpoints` map of the primary
+	/// `FundingScope` as `(commitment_txid, bytes)` entries, for a one-time fat→thin migration of
+	/// the side store. The `bytes` use the same codec the persister writes, so they can be stored
+	/// verbatim and later fed back to [`Self::provide_claim_data_serialized`].
+	pub fn claim_data_for_migration_serialized(&self) -> Vec<(Txid, Vec<u8>)> {
+		let inner = self.inner.lock().unwrap();
+		inner
+			.funding
+			.counterparty_claimable_outpoints
+			.iter()
+			.map(|(txid, htlcs)| {
+				let mut bytes = Vec::new();
+				write_claim_htlcs(htlcs, &mut bytes).expect("writing to a Vec is infallible");
+				(*txid, bytes)
+			})
+			.collect()
 	}
 
 	/// Gets the balances in this channel which are either claimable by us if we were to
@@ -7777,8 +7791,11 @@ mod tests {
 			"thin read yields an empty map until repopulated",
 		);
 
-		// Repopulate from the "side store" (here, the fat map) and assert equality with the fat path.
-		thin_rt.provide_claim_data(fat_map.clone());
+		// Repopulate from the "side store" via the serialized codec (encode the fat map to entries,
+		// as the persister would, then decode them back) and assert equality with the fat path.
+		let entries = monitor.claim_data_for_migration_serialized();
+		assert_eq!(entries.len(), fat_map.len());
+		thin_rt.provide_claim_data_serialized(entries).unwrap();
 		assert_eq!(
 			thin_rt.inner.lock().unwrap().funding.counterparty_claimable_outpoints, fat_map,
 			"repopulated thin map must equal the fat round-trip map",
