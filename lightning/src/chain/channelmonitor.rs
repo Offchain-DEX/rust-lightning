@@ -1277,7 +1277,7 @@ impl ClaimPersistOp {
 ///
 /// The encoding mirrors the in-blob layout (`HTLCOutputInCommitment` followed by an
 /// `Option<HTLCSource>`), so [`read_claim_htlcs`] reconstructs exactly what
-/// [`ChannelMonitor::provide_claim_data`] expects. Used by the persister to write the
+/// [`ChannelMonitor::provide_claim_entries_serialized`] expects. Used by the persister to write the
 /// `MonitorUpdatingPersisterAsync` side store; see [`ClaimPersistOp`].
 pub(crate) fn write_claim_htlcs<W: Writer>(
 	htlcs: &[(HTLCOutputInCommitment, Option<Box<HTLCSource>>)], writer: &mut W,
@@ -1719,7 +1719,7 @@ pub(crate) fn write_chanmon_internal<Signer: EcdsaChannelSigner, W: Writer>(
 	if channel_monitor.claim_data_externalized {
 		// Externalized: the primary scope's claim map lives in a backend-agnostic side store rather
 		// than this blob. Write a 0-length placeholder; the is-thin marker TLV in the suffix tells the
-		// reader to repopulate via `provide_claim_data`. (Off-path, i.e. when not externalized, the
+		// reader to repopulate the resident working set via `provide_claim_entries_serialized`. (Off-path, i.e. when not externalized, the
 		// `else` below is byte-identical to upstream.)
 		writer.write_all(&0u64.to_be_bytes())?;
 	} else {
@@ -2990,21 +2990,41 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 	///
 	/// When enabled, the monitor stops serializing that (potentially unbounded) map into its blob,
 	/// writing a 0-length placeholder plus an is-thin marker instead, and records side-store deltas
-	/// retrievable via [`Self::take_pending_claim_persist`]. The map stays fully resident in RAM, so
-	/// claim/balance logic is unchanged. The persister is responsible for durably mirroring the map
-	/// into a backend-agnostic side store atomically with the (thin) monitor bytes, and for
-	/// repopulating it via [`Self::provide_claim_data`] after reading the monitor.
+	/// retrievable via [`Self::take_pending_claim_persist`]. Only a bounded working set of the map
+	/// stays resident in RAM (see [`Self::required_resident_claim_txids`]); enabling immediately
+	/// trims the map down to that set, with the side store (which the caller must have fully seeded
+	/// first) holding everything else. The persister is responsible for durably mirroring deltas
+	/// into a backend-agnostic side store ahead of the (thin) monitor bytes, for repopulating the
+	/// working set via [`Self::provide_claim_entries_serialized`] after reading the monitor, and —
+	/// together with the chain-sync layer — for prefetching entries of confirmed transactions
+	/// before they are fed to the monitor.
 	///
 	/// This must only be enabled once the persister side-store wiring is in place. Defaults to
 	/// `false` (upstream-identical serialization).
 	pub fn set_claim_data_externalized(&self, externalized: bool) {
-		self.inner.lock().unwrap().claim_data_externalized = externalized;
+		let mut inner = self.inner.lock().unwrap();
+		inner.claim_data_externalized = externalized;
+		if externalized {
+			// Trim to the resident working set: the side store is authoritative for everything
+			// else, and keeping the full (unbounded) map resident defeats the externalization.
+			let mut keep = new_hash_set();
+			if let Some(txid) = inner.funding.current_counterparty_commitment_txid {
+				keep.insert(txid);
+			}
+			if let Some(txid) = inner.funding.prev_counterparty_commitment_txid {
+				keep.insert(txid);
+			}
+			for txid in inner.counterparty_commitment_txn_on_chain.keys() {
+				keep.insert(*txid);
+			}
+			inner.funding.counterparty_claimable_outpoints.retain(|txid, _| keep.contains(txid));
+		}
 	}
 
 	/// Whether this monitor's primary-scope claim data is currently externalized.
 	///
 	/// After reading a monitor, the loader uses this to branch: `true` ⇒ the blob was written thin,
-	/// so repopulate the in-memory map from the side store via [`Self::provide_claim_data`]; `false`
+	/// so repopulate the resident working set from the side store via [`Self::provide_claim_entries_serialized`]; `false`
 	/// ⇒ a legacy/fat monitor whose side store should be seeded by a one-time migration.
 	pub fn is_claim_data_externalized(&self) -> bool {
 		self.inner.lock().unwrap().claim_data_externalized
@@ -3019,29 +3039,65 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 		core::mem::take(&mut self.inner.lock().unwrap().pending_claim_persist)
 	}
 
-	/// Repopulates the in-memory `counterparty_claimable_outpoints` map of the primary
-	/// `FundingScope` from side-store entries after reading a thin (externalized) monitor.
+	/// The commitment txids whose claim entries must be resident in memory for this monitor to
+	/// operate: the current and previous counterparty commitments (hard-required by balance, HTLC
+	/// and revocation logic) plus any counterparty commitments already confirmed on-chain (required
+	/// by the ongoing claim logic).
+	///
+	/// After reading a thin (externalized) monitor, the loader must fetch exactly these entries
+	/// from the side store and provide them via [`Self::provide_claim_entries_serialized`] before
+	/// the monitor is used. All other entries are loaded on demand: the chain-sync layer prefetches
+	/// the entries of confirmed transactions (and of their inputs' spent txids) before feeding them
+	/// to the monitor, which is what lets a revoked commitment broadcast be recognized and punished
+	/// without the full map ever being resident.
+	pub fn required_resident_claim_txids(&self) -> Vec<Txid> {
+		let inner = self.inner.lock().unwrap();
+		let mut txids = Vec::new();
+		let push_unique = |txid: Txid, txids: &mut Vec<Txid>| {
+			if !txids.contains(&txid) {
+				txids.push(txid);
+			}
+		};
+		if let Some(txid) = inner.funding.current_counterparty_commitment_txid {
+			push_unique(txid, &mut txids);
+		}
+		if let Some(txid) = inner.funding.prev_counterparty_commitment_txid {
+			push_unique(txid, &mut txids);
+		}
+		for txid in inner.counterparty_commitment_txn_on_chain.keys() {
+			push_unique(*txid, &mut txids);
+		}
+		txids
+	}
+
+	/// Inserts side-store claim entries into the in-memory `counterparty_claimable_outpoints` map
+	/// of the primary `FundingScope`.
 	///
 	/// Each entry is `(commitment_txid, bytes)` where `bytes` was produced by the persister's
-	/// write-ahead side-store writes (the same codec used internally). Must be called before the
-	/// monitor is used for claim/balance logic; it replaces the (empty, when thin) map loaded from
-	/// the blob.
-	pub fn provide_claim_data_serialized(
+	/// write-ahead side-store writes (the same codec used internally). Entries already resident are
+	/// left untouched: the in-memory map may be ahead of the side store between an update being
+	/// applied and its write-ahead landing, so resident state always wins.
+	///
+	/// Used both by the loader (for [`Self::required_resident_claim_txids`]) and by the chain-sync
+	/// prefetch path (for txids about to be fed to the monitor as confirmed).
+	pub fn provide_claim_entries_serialized(
 		&self, entries: Vec<(Txid, Vec<u8>)>,
 	) -> Result<(), DecodeError> {
-		let mut map = hash_map_with_capacity(entries.len());
+		let mut inner = self.inner.lock().unwrap();
 		for (txid, bytes) in entries {
+			if inner.funding.counterparty_claimable_outpoints.contains_key(&txid) {
+				continue;
+			}
 			let htlcs = read_claim_htlcs(&mut &bytes[..])?;
-			map.insert(txid, htlcs);
+			inner.funding.counterparty_claimable_outpoints.insert(txid, htlcs);
 		}
-		self.inner.lock().unwrap().funding.counterparty_claimable_outpoints = map;
 		Ok(())
 	}
 
 	/// Serializes the full in-memory `counterparty_claimable_outpoints` map of the primary
 	/// `FundingScope` as `(commitment_txid, bytes)` entries, for a one-time fat→thin migration of
 	/// the side store. The `bytes` use the same codec the persister writes, so they can be stored
-	/// verbatim and later fed back to [`Self::provide_claim_data_serialized`].
+	/// verbatim and later fed back to [`Self::provide_claim_entries_serialized`].
 	pub fn claim_data_for_migration_serialized(&self) -> Vec<(Txid, Vec<u8>)> {
 		let inner = self.inner.lock().unwrap();
 		inner
@@ -3674,6 +3730,15 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						.cloned()
 						.unwrap_or_default();
 					self.pending_claim_persist.push(ClaimPersistOp::NullSources { txid, htlcs });
+					// The entry is no longer reachable through the `current`/`prev` txid fields and
+					// its final (source-stripped) form is queued for the side store, so drop it
+					// from memory. This is what keeps the resident map bounded: every state is
+					// evicted when revoked. Lookups for the txid after this point only happen if
+					// the (revoked) commitment appears on-chain, which reloads the entry from the
+					// side store — unless it is already being claimed, in which case it must stay.
+					if !self.counterparty_commitment_txn_on_chain.contains_key(&txid) {
+						self.funding.counterparty_claimable_outpoints.remove(&txid);
+					}
 				}
 			}
 		}
@@ -7000,7 +7065,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 		});
 		// When the is-thin marker is present, the 0-length `counterparty_claimable_outpoints` read
 		// above is a placeholder: the real map lives in the side store and must be repopulated by the
-		// persister via `provide_claim_data` before the monitor is used. We restore the flag so
+		// persister via `provide_claim_entries_serialized` (for the required resident txids) before the monitor is used. We restore the flag so
 		// subsequent persists keep thin-writing. Absent marker ⇒ legacy/fat monitor (flag stays false;
 		// the persister migrates it on load).
 		let claim_data_externalized = claim_data_externalized_marker.unwrap_or(false);
@@ -7739,8 +7804,9 @@ mod tests {
 	fn test_claim_data_externalization_roundtrip() {
 		// Verifies the thin (externalized) serialization path on a real monitor: writing with the
 		// flag set drops the primary scope's `counterparty_claimable_outpoints` from the blob (a
-		// 0-length placeholder + is-thin marker), and after reading + `provide_claim_data` the
-		// in-memory map matches the fat round-trip. Also asserts the off-path (flag clear) is
+		// 0-length placeholder + is-thin marker), enabling the flag trims the resident map to the
+		// required working set, and after reading + `provide_claim_entries_serialized` the
+		// in-memory map matches the fat round-trip. Also asserts the off-path (flag never set) is
 		// byte-identical and that the Append delta hook fires only once externalized.
 		use crate::ln::channelmanager::HTLCSource;
 		use bitcoin::hashes::Hash;
@@ -7775,9 +7841,38 @@ mod tests {
 		let fat_bytes = monitor.encode();
 		let fat_map = monitor.inner.lock().unwrap().funding.counterparty_claimable_outpoints.clone();
 
+		// Off-path round-trip: a monitor that never externalized reads back with the flag clear
+		// and the full claim map intact. (Byte-identity across a re-read is not asserted since
+		// map serialization order is not canonical.)
+		let fat_rt = read_monitor(&fat_bytes);
+		assert!(!fat_rt.is_claim_data_externalized());
+		assert_eq!(
+			fat_rt.inner.lock().unwrap().funding.counterparty_claimable_outpoints, fat_map,
+			"non-externalized round-trip must preserve the full claim map",
+		);
+
+		// Dump the full map for the side store BEFORE enabling externalization (the migration
+		// order), since enabling trims the resident map down to the required working set.
+		let entries = monitor.claim_data_for_migration_serialized();
+		assert_eq!(entries.len(), fat_map.len());
+
+		// Enabling externalization trims the resident map to the required working set, which on an
+		// open, never-force-closed channel is exactly the current + previous commitments.
+		monitor.set_claim_data_externalized(true);
+		{
+			let inner = monitor.inner.lock().unwrap();
+			let required: Vec<_> = inner.funding.current_counterparty_commitment_txid.iter()
+				.chain(inner.funding.prev_counterparty_commitment_txid.iter())
+				.collect();
+			assert_eq!(inner.funding.counterparty_claimable_outpoints.len(), required.len());
+			for txid in required {
+				assert!(inner.funding.counterparty_claimable_outpoints.contains_key(txid),
+					"required txid must survive the trim");
+			}
+		}
+
 		// Thin round-trip: the map is dropped from the blob, the marker restores the flag, and the
 		// map is empty until repopulated.
-		monitor.set_claim_data_externalized(true);
 		let thin_bytes = monitor.encode();
 		assert!(
 			thin_bytes.len() < fat_bytes.len(),
@@ -7791,23 +7886,35 @@ mod tests {
 			"thin read yields an empty map until repopulated",
 		);
 
-		// Repopulate from the "side store" via the serialized codec (encode the fat map to entries,
-		// as the persister would, then decode them back) and assert equality with the fat path.
-		let entries = monitor.claim_data_for_migration_serialized();
-		assert_eq!(entries.len(), fat_map.len());
-		thin_rt.provide_claim_data_serialized(entries).unwrap();
+		// The loader must ask for exactly the working set: current + prev when set (no on-chain
+		// commitments in this test; prev is None once the last revocation pruned it).
+		let required_txids = thin_rt.required_resident_claim_txids();
+		{
+			let inner = thin_rt.inner.lock().unwrap();
+			let expected: Vec<_> = inner.funding.current_counterparty_commitment_txid.iter()
+				.chain(inner.funding.prev_counterparty_commitment_txid.iter())
+				.copied().collect();
+			assert!(!expected.is_empty());
+			assert_eq!(required_txids, expected);
+		}
+
+		// Repopulate from the "side store" entries (full set, as a prefetch of everything would)
+		// and assert equality with the fat map: the codec round-trips losslessly.
+		thin_rt.provide_claim_entries_serialized(entries.clone()).unwrap();
 		assert_eq!(
 			thin_rt.inner.lock().unwrap().funding.counterparty_claimable_outpoints, fat_map,
 			"repopulated thin map must equal the fat round-trip map",
 		);
 
-		// Off-path must be byte-identical: clearing the flag reproduces the fat bytes exactly.
-		monitor.set_claim_data_externalized(false);
-		assert_eq!(monitor.encode(), fat_bytes, "non-externalized serialization must be byte-identical");
+		// Resident entries win: re-providing the same txids leaves the map untouched.
+		thin_rt.provide_claim_entries_serialized(entries).unwrap();
+		assert_eq!(
+			thin_rt.inner.lock().unwrap().funding.counterparty_claimable_outpoints, fat_map,
+			"re-providing resident entries must be a no-op",
+		);
 
 		// Append delta hook: once externalized, a new counterparty commitment emits exactly one
 		// Append op carrying the same (txid, htlcs) inserted into the resident map.
-		monitor.set_claim_data_externalized(true);
 		assert!(monitor.take_pending_claim_persist().is_empty());
 		let dummy_key = PublicKey::from_secret_key(
 			&Secp256k1::new(), &SecretKey::from_slice(&[42; 32]).unwrap());

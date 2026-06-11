@@ -1410,14 +1410,42 @@ impl<
 			Some(res) => res,
 			None => return Ok(None),
 		};
-		// If the monitor blob is thin (claim data externalized), repopulate the in-memory
-		// `counterparty_claimable_outpoints` map from the side store BEFORE replaying any monitor
-		// updates below: the replayed `ChannelMonitorUpdate`s drive `provide_secret` /
-		// `provide_latest_counterparty_commitment_tx`, which index into that map. The thin snapshot
-		// loaded above has it empty, so without this they'd panic / mis-prune.
+		// If the monitor blob is thin (claim data externalized), load the required resident working
+		// set (current + previous counterparty commitments and any commitments already on-chain)
+		// from the side store BEFORE replaying any monitor updates below: the replayed
+		// `ChannelMonitorUpdate`s drive `provide_secret` /
+		// `provide_latest_counterparty_commitment_tx`, which index into those entries. The thin
+		// snapshot loaded above has the map empty, so without this they'd panic / mis-prune. All
+		// other entries stay on disk and are prefetched on demand when their transactions confirm.
 		if monitor.is_claim_data_externalized() {
-			let entries = self.read_externalized_claim_data(monitor_key).await?;
-			monitor.provide_claim_data_serialized(entries).map_err(|e| {
+			let mut entries = Vec::new();
+			for txid in monitor.required_resident_claim_txids() {
+				let bytes = self
+					.kv_store
+					.read(
+						CHANNEL_MONITOR_CLAIM_PERSISTENCE_PRIMARY_NAMESPACE,
+						monitor_key,
+						&txid.to_string(),
+					)
+					.await
+					.map_err(|e| {
+						log_error!(
+							self.logger,
+							"Missing externalized claim entry {} for monitor {}: {}",
+							txid,
+							monitor_key,
+							e
+						);
+						// Claim deltas are written ahead of the monitor/update blobs that
+						// reference them, so a blob-referenced txid must exist in the side store.
+						io::Error::new(
+							io::ErrorKind::InvalidData,
+							"Missing externalized claim entry",
+						)
+					})?;
+				entries.push((txid, bytes));
+			}
+			monitor.provide_claim_entries_serialized(entries).map_err(|e| {
 				log_error!(
 					self.logger,
 					"Failed to repopulate externalized claim data for monitor {}: {:?}",
@@ -1455,30 +1483,6 @@ impl<
 			})?;
 		}
 		Ok(Some((best_block, monitor)))
-	}
-
-	/// Reads the externalized counterparty-claim side store for a monitor, returning the serialized
-	/// `(commitment_txid, bytes)` entries to feed to [`ChannelMonitor::provide_claim_data_serialized`].
-	/// Companion to the write-ahead writes in [`Self::claim_write_futures`].
-	async fn read_externalized_claim_data(
-		&self, monitor_key: &str,
-	) -> Result<Vec<(Txid, Vec<u8>)>, io::Error> {
-		let keys = self
-			.kv_store
-			.list(CHANNEL_MONITOR_CLAIM_PERSISTENCE_PRIMARY_NAMESPACE, monitor_key)
-			.await?;
-		let mut entries = Vec::with_capacity(keys.len());
-		for key in keys {
-			let txid = Txid::from_str(&key).map_err(|_| {
-				io::Error::new(io::ErrorKind::InvalidData, "Invalid claim-data txid key")
-			})?;
-			let bytes = self
-				.kv_store
-				.read(CHANNEL_MONITOR_CLAIM_PERSISTENCE_PRIMARY_NAMESPACE, monitor_key, &key)
-				.await?;
-			entries.push((txid, bytes));
-		}
-		Ok(entries)
 	}
 
 	/// Read a channel monitor.
