@@ -23,6 +23,11 @@ use crate::sign::{
 };
 use crate::sync::Mutex;
 use crate::util::logger::Logger;
+// NOTE(fork): upstream bounds the `Filter` generic below with hard `Sync + Send`, which is
+// unsatisfiable on wasm32 (single-threaded, non-`Send` backends). Use `MaybeSync + MaybeSend`
+// instead — real `Send`/`Sync` on native (the `std` feature), no-ops on wasm — so the sweeper
+// builds for both. Pre-bump these were just `F: Filter`.
+use crate::util::native_async::{MaybeSend, MaybeSync};
 use crate::util::persist::{
 	KVStore, KVStoreSync, KVStoreSyncWrapper, OUTPUT_SWEEPER_PERSISTENCE_KEY,
 	OUTPUT_SWEEPER_PERSISTENCE_PRIMARY_NAMESPACE, OUTPUT_SWEEPER_PERSISTENCE_SECONDARY_NAMESPACE,
@@ -751,7 +756,7 @@ impl<
 		B: BroadcasterInterface,
 		D: Deref,
 		E: FeeEstimator,
-		F: Filter + Sync + Send,
+		F: Filter + MaybeSync + MaybeSend,
 		K: KVStore,
 		L: Logger,
 		O: OutputSpender,
@@ -799,7 +804,7 @@ impl<
 		B: BroadcasterInterface,
 		D: Deref,
 		E: FeeEstimator,
-		F: Filter + Sync + Send,
+		F: Filter + MaybeSync + MaybeSend,
 		K: KVStore,
 		L: Logger,
 		O: OutputSpender,
@@ -897,7 +902,7 @@ impl<
 		B: BroadcasterInterface,
 		D: Deref,
 		E: FeeEstimator,
-		F: Filter + Sync + Send,
+		F: Filter + MaybeSync + MaybeSend,
 		K: KVStore,
 		L: Logger,
 		O: OutputSpender,
@@ -1108,7 +1113,7 @@ impl<
 		B: BroadcasterInterface,
 		D: Deref,
 		E: FeeEstimator,
-		F: Filter + Sync + Send,
+		F: Filter + MaybeSync + MaybeSend,
 		K: Deref,
 		L: Logger,
 		O: OutputSpender,
@@ -1132,7 +1137,7 @@ impl<
 		B: BroadcasterInterface,
 		D: Deref,
 		E: FeeEstimator,
-		F: Filter + Sync + Send,
+		F: Filter + MaybeSync + MaybeSend,
 		K: Deref,
 		L: Logger,
 		O: OutputSpender,
@@ -1164,7 +1169,7 @@ impl<
 		B: BroadcasterInterface,
 		D: Deref,
 		E: FeeEstimator,
-		F: Filter + Sync + Send,
+		F: Filter + MaybeSync + MaybeSend,
 		K: Deref,
 		L: Logger,
 		O: OutputSpender,
