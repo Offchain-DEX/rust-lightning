@@ -3485,6 +3485,13 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			});
 		}
 
+		// Drop cache entries whose counterparty commitment has been revoked. Payment hashes which
+		// never enter `payment_preimages` — HTLCs offered by us, the outbound leg of a forward, and
+		// inbound HTLCs which fail — are not reachable from the retain above, so they are pruned
+		// here against the same liveness bound.
+		let min_idx = self.get_min_seen_secret();
+		self.counterparty_hash_commitment_number.retain(|_, cn| *cn < min_idx);
+
 		Ok(())
 	}
 
@@ -7326,6 +7333,90 @@ mod tests {
 		monitor.provide_secret(281474976710652, secret.clone()).unwrap();
 		assert_eq!(monitor.inner.lock().unwrap().payment_preimages.len(), 5);
 		test_preimages_exist!(&preimages[0..5], monitor);
+	}
+
+	#[test]
+	#[rustfmt::skip]
+	fn test_prune_counterparty_hash_commitment_number_without_preimages() {
+		// HTLCs we offer (and inbound HTLCs which fail) never enter `payment_preimages`, so their
+		// `counterparty_hash_commitment_number` entries are only reclaimed by the revocation-bound
+		// prune in `provide_secret`. Exercise that prune with no preimages at all, then with a
+		// preimage subset, asserting entries for live (unrevoked) commitments always survive.
+		let secp_ctx = Secp256k1::new();
+		let logger = Arc::new(TestLogger::new());
+		let broadcaster = Arc::new(TestBroadcaster::new(Network::Testnet));
+		let fee_estimator = TestFeeEstimator::new(253);
+
+		let dummy_key = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
+
+		let mut hashes = Vec::new();
+		for i in 0..20u8 {
+			let preimage = PaymentPreimage([i; 32]);
+			let hash = PaymentHash(Sha256::hash(&preimage.0[..]).to_byte_array());
+			hashes.push((preimage, hash));
+		}
+
+		macro_rules! hashes_slice_to_htlc_outputs {
+			($hashes_slice: expr) => {
+				$hashes_slice.iter().enumerate().map(|(idx, hash)| {
+					(HTLCOutputInCommitment {
+						offered: true,
+						amount_msat: 0,
+						cltv_expiry: 0,
+						payment_hash: hash.1.clone(),
+						transaction_output_index: Some(idx as u32),
+					}, None)
+				}).collect::<Vec<_>>()
+			}
+		}
+		macro_rules! chcn {
+			($monitor: expr) => {
+				$monitor.inner.lock().unwrap().counterparty_hash_commitment_number.clone()
+			}
+		}
+
+		let funding_outpoint = OutPoint { txid: Txid::all_zeros(), index: u16::MAX };
+		let channel_id = ChannelId::v1_from_funding_outpoint(funding_outpoint);
+		let monitor = super::dummy_monitor(channel_id, |keys| keys);
+
+		// Commitment 2^48-1 carries hashes 0..10, commitment 2^48-2 carries hashes 5..15. No
+		// preimages are provided: all 15 hashes are only reachable through the revocation prune.
+		monitor.provide_latest_counterparty_commitment_tx(Txid::from_byte_array(Sha256::hash(b"1").to_byte_array()),
+			hashes_slice_to_htlc_outputs!(hashes[0..10]), 281474976710655, dummy_key);
+		monitor.provide_latest_counterparty_commitment_tx(Txid::from_byte_array(Sha256::hash(b"2").to_byte_array()),
+			hashes_slice_to_htlc_outputs!(hashes[5..15]), 281474976710654, dummy_key);
+		assert_eq!(chcn!(monitor).len(), 15);
+
+		// Revoking 2^48-1 drops hashes 0..5 (only present there); 5..15 live in 2^48-2.
+		let mut secret = [0; 32];
+		secret[0..32].clone_from_slice(&<Vec<u8>>::from_hex("7cc854b54e3e0dcdb010d7a3fee464a9687be6e8db3be6854c475621e007a5dc").unwrap());
+		monitor.provide_secret(281474976710655, secret.clone()).unwrap();
+		let map = chcn!(monitor);
+		assert_eq!(map.len(), 10);
+		for hash in &hashes[5..15] {
+			assert_eq!(map.get(&hash.1), Some(&281474976710654));
+		}
+
+		// A preimage for a hash live in 2^48-2 must survive the revocation prune, as must its map
+		// entry, until its commitment is itself revoked.
+		let bounded_fee_estimator = LowerBoundedFeeEstimator::new(&fee_estimator);
+		monitor.provide_payment_preimage_unsafe_legacy(
+			&hashes[7].1, &hashes[7].0, &broadcaster, &bounded_fee_estimator, &logger
+		);
+		monitor.provide_latest_counterparty_commitment_tx(Txid::from_byte_array(Sha256::hash(b"3").to_byte_array()),
+			hashes_slice_to_htlc_outputs!(hashes[15..20]), 281474976710653, dummy_key);
+		secret[0..32].clone_from_slice(&<Vec<u8>>::from_hex("c7518c8ae4660ed02894df8976fa1a3659c1a8b4b5bec0c4b872abeba4cb8964").unwrap());
+		monitor.provide_secret(281474976710654, secret.clone()).unwrap();
+		{
+			let inner = monitor.inner.lock().unwrap();
+			// 2^48-2 is revoked: hashes 5..15 drop (the preimage-holding hash 7 included — it is in
+			// no live commitment), leaving only 15..20 which live in 2^48-3.
+			assert_eq!(inner.counterparty_hash_commitment_number.len(), 5);
+			for hash in &hashes[15..20] {
+				assert_eq!(inner.counterparty_hash_commitment_number.get(&hash.1), Some(&281474976710653));
+			}
+			assert!(inner.payment_preimages.is_empty());
+		}
 	}
 
 	#[test]
