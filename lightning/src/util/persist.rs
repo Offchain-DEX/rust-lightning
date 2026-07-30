@@ -31,7 +31,9 @@ use crate::{io, log_error};
 use crate::chain;
 use crate::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
 use crate::chain::chainmonitor::Persist;
-use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate};
+use crate::chain::channelmonitor::{
+	write_claim_htlcs, ChannelMonitor, ChannelMonitorUpdate, ClaimPersistOp,
+};
 use crate::chain::transaction::OutPoint;
 use crate::chain::BlockLocator;
 use crate::ln::types::ChannelId;
@@ -71,6 +73,15 @@ pub const CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE: &str = "monitors";
 pub const CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE: &str = "";
 /// The primary namespace under which [`ChannelMonitorUpdate`]s will be persisted.
 pub const CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE: &str = "monitor_updates";
+
+/// The primary namespace under which externalized counterparty-claim data is persisted (one key
+/// per counterparty commitment txid, grouped by monitor key in the secondary namespace). Only
+/// written when a monitor has claim-data externalization enabled; see
+/// [`ChannelMonitor::set_claim_data_externalized`] and [`ClaimPersistOp`].
+///
+/// [`ChannelMonitor::set_claim_data_externalized`]: crate::chain::channelmonitor::ChannelMonitor::set_claim_data_externalized
+/// [`ClaimPersistOp`]: crate::chain::channelmonitor::ClaimPersistOp
+pub const CHANNEL_MONITOR_CLAIM_PERSISTENCE_PRIMARY_NAMESPACE: &str = "monitor_claims";
 
 /// The primary namespace under which archived [`ChannelMonitor`]s will be persisted.
 pub const ARCHIVED_CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE: &str = "archived_monitors";
@@ -733,6 +744,15 @@ impl<ChannelSigner: EcdsaChannelSigner, K: KVStoreSync + ?Sized> Persist<Channel
 	fn persist_new_channel(
 		&self, monitor_name: MonitorName, monitor: &ChannelMonitor<ChannelSigner>,
 	) -> chain::ChannelMonitorUpdateStatus {
+		// This naive persister has no side-store handling: it would write thin monitor blobs
+		// while silently dropping the externalized claim deltas, orphaning the claim data.
+		// Monitors with claim-data externalization enabled must be persisted through
+		// `MonitorUpdatingPersister` / `MonitorUpdatingPersisterAsync` instead.
+		debug_assert!(
+			!monitor.is_claim_data_externalized(),
+			"monitors with externalized claim data must not be persisted via the naive \
+			 KVStoreSync Persist implementation"
+		);
 		match self.write(
 			CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
 			CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
@@ -748,6 +768,13 @@ impl<ChannelSigner: EcdsaChannelSigner, K: KVStoreSync + ?Sized> Persist<Channel
 		&self, monitor_name: MonitorName, _update: Option<&ChannelMonitorUpdate>,
 		monitor: &ChannelMonitor<ChannelSigner>,
 	) -> chain::ChannelMonitorUpdateStatus {
+		// See `persist_new_channel` above: externalized monitors must not go through this
+		// side-store-unaware persister.
+		debug_assert!(
+			!monitor.is_claim_data_externalized(),
+			"monitors with externalized claim data must not be persisted via the naive \
+			 KVStoreSync Persist implementation"
+		);
 		match self.write(
 			CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
 			CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
@@ -1046,7 +1073,8 @@ where
 	fn persist_new_channel(
 		&self, monitor_name: MonitorName, monitor: &ChannelMonitor<ChannelSigner>,
 	) -> chain::ChannelMonitorUpdateStatus {
-		let res = poll_sync_future(self.0 .0.persist_new_channel(monitor_name, monitor));
+		let res =
+			poll_sync_future(Arc::clone(&self.0 .0).persist_new_channel(monitor_name, monitor));
 		match res {
 			Ok(_) => chain::ChannelMonitorUpdateStatus::Completed,
 			Err(e) => {
@@ -1120,6 +1148,85 @@ pub struct MonitorUpdatingPersisterAsync<
 	FE: FeeEstimator,
 >(Arc<MonitorUpdatingPersisterAsyncInner<K, S, L, ES, SP, BI, FE>>);
 
+/// Completion state of one link in a per-monitor persistence chain, used only when claim-data
+/// externalization is enabled (see [`ChannelMonitor::set_claim_data_externalized`]).
+///
+/// The [`KVStore`] contract only orders writes to the *same* key; it explicitly provides no
+/// cross-key ordering. Externalized persistence is inherently multi-key (side-store entries plus
+/// the monitor blob/update), so the required "claim data durable before the blob that references
+/// it" property cannot be delegated to the backend. Instead, every persistence operation for an
+/// externalized monitor is a link in a chain: it installs itself as the monitor's tail gate at
+/// call time (preserving the caller's issue order) and, when executed, waits for its predecessor
+/// gate before issuing its blob/update write. Because the write is only *called* once the
+/// predecessor completed, correctness holds for any conformant backend, including ones that begin
+/// executing a write eagerly when it is called.
+///
+/// A gate completes as `ok` once its append-side-store writes and its blob/update write are all
+/// durable. It completes as failed (poisoning the chain) if any of those writes fail or its
+/// future is dropped before finishing: drained [`ClaimPersistOp`]s are lost with the failed
+/// future, and they can only be regenerated by replaying updates on top of the last durable blob
+/// — so no later blob/update write may become durable past the failure point. Successors observe
+/// the failed gate and refuse to write; the store is left frozen at its last consistent state
+/// until restart, after which reload + replay regenerates the lost deltas.
+struct WriteGate {
+	state: Mutex<(Option<bool>, Option<task::Waker>)>,
+}
+
+impl WriteGate {
+	fn new() -> Self {
+		WriteGate { state: Mutex::new((None, None)) }
+	}
+
+	fn complete(&self, ok: bool) {
+		let waker = {
+			let mut state = self.state.lock().unwrap();
+			if state.0.is_some() {
+				return;
+			}
+			state.0 = Some(ok);
+			state.1.take()
+		};
+		if let Some(waker) = waker {
+			waker.wake();
+		}
+	}
+}
+
+/// Waits for a [`WriteGate`] to complete, yielding whether it completed successfully.
+///
+/// Each gate has at most one waiter (its immediate successor in the chain), so a single waker
+/// slot suffices.
+struct WriteGateWait(Arc<WriteGate>);
+
+impl Future for WriteGateWait {
+	type Output = bool;
+	fn poll(self: Pin<&mut Self>, cx: &mut task::Context) -> task::Poll<bool> {
+		let mut state = self.0.state.lock().unwrap();
+		if let Some(ok) = state.0 {
+			task::Poll::Ready(ok)
+		} else {
+			state.1 = Some(cx.waker().clone());
+			task::Poll::Pending
+		}
+	}
+}
+
+/// Completes the owned [`WriteGate`] as failed on drop unless [`Self::complete_ok`] was called,
+/// ensuring a dropped or errored persistence future poisons the chain instead of wedging it.
+struct WriteGateGuard(Arc<WriteGate>);
+
+impl WriteGateGuard {
+	fn complete_ok(self) {
+		self.0.complete(true);
+	}
+}
+
+impl Drop for WriteGateGuard {
+	fn drop(&mut self) {
+		self.0.complete(false);
+	}
+}
+
 struct MonitorUpdatingPersisterAsyncInner<
 	K: KVStore,
 	S: FutureSpawner,
@@ -1131,6 +1238,10 @@ struct MonitorUpdatingPersisterAsyncInner<
 > {
 	kv_store: K,
 	async_completed_updates: Mutex<Vec<(ChannelId, u64)>>,
+	/// Per-monitor tail gates ordering all blob/update writes of monitors with claim-data
+	/// externalization enabled. See [`WriteGate`]. Untouched (and empty) for non-externalized
+	/// monitors, whose persistence is byte-for-byte upstream.
+	claim_gates: Mutex<HashMap<String, Arc<WriteGate>>>,
 	future_spawner: S,
 	logger: L,
 	maximum_pending_updates: u64,
@@ -1160,6 +1271,7 @@ impl<
 		MonitorUpdatingPersisterAsync(Arc::new(MonitorUpdatingPersisterAsyncInner {
 			kv_store,
 			async_completed_updates: Mutex::new(Vec::new()),
+			claim_gates: Mutex::new(new_hash_map()),
 			future_spawner,
 			logger,
 			maximum_pending_updates,
@@ -1294,9 +1406,10 @@ where
 		notifier: Arc<Notifier>,
 	) {
 		let inner = Arc::clone(&self.0);
-		// Note that `persist_new_channel` is a sync method which calls all the way through to the
-		// sync KVStore::write method (which returns a future) to ensure writes are well-ordered.
-		let future = inner.persist_new_channel(monitor_name, monitor);
+		// Note that `persist_new_channel` is a sync method which does its ordering-sensitive work
+		// (including calling the sync KVStore::write method, which returns a future, for
+		// non-externalized monitors) before returning the future, ensuring writes are well-ordered.
+		let future = Arc::clone(&inner).persist_new_channel(monitor_name, monitor);
 		let channel_id = monitor.channel_id();
 		let completion = (monitor.channel_id(), monitor.get_latest_update_id());
 		let _runs_free = self.0.future_spawner.spawn(async move {
@@ -1401,6 +1514,51 @@ impl<
 			Some(res) => res,
 			None => return Ok(None),
 		};
+		// If the monitor blob is thin (claim data externalized), load the required resident working
+		// set (current + previous counterparty commitments and any commitments already on-chain)
+		// from the side store BEFORE replaying any monitor updates below: the replayed
+		// `ChannelMonitorUpdate`s drive `provide_secret` /
+		// `provide_latest_counterparty_commitment_tx`, which index into those entries. The thin
+		// snapshot loaded above has the map empty, so without this they'd panic / mis-prune. All
+		// other entries stay on disk and are prefetched on demand when their transactions confirm.
+		if monitor.is_claim_data_externalized() {
+			let mut entries = Vec::new();
+			for txid in monitor.required_resident_claim_txids() {
+				let bytes = self
+					.kv_store
+					.read(
+						CHANNEL_MONITOR_CLAIM_PERSISTENCE_PRIMARY_NAMESPACE,
+						monitor_key,
+						&txid.to_string(),
+					)
+					.await
+					.map_err(|e| {
+						log_error!(
+							self.logger,
+							"Missing externalized claim entry {} for monitor {}: {}",
+							txid,
+							monitor_key,
+							e
+						);
+						// Claim deltas are written ahead of the monitor/update blobs that
+						// reference them, so a blob-referenced txid must exist in the side store.
+						io::Error::new(
+							io::ErrorKind::InvalidData,
+							"Missing externalized claim entry",
+						)
+					})?;
+				entries.push((txid, bytes));
+			}
+			monitor.provide_claim_entries_serialized(entries).map_err(|e| {
+				log_error!(
+					self.logger,
+					"Failed to repopulate externalized claim data for monitor {}: {:?}",
+					monitor_key,
+					e
+				);
+				io::Error::new(io::ErrorKind::InvalidData, "Corrupt externalized claim data")
+			})?;
+		}
 		let current_update_id = monitor.get_latest_update_id();
 		let updates: Result<Vec<_>, _> =
 			list_res?.into_iter().map(|name| UpdateName::new(name)).collect();
@@ -1528,9 +1686,12 @@ impl<
 		Ok(())
 	}
 
-	fn persist_new_channel<'a, ChannelSigner: EcdsaChannelSigner>(
-		&'a self, monitor_name: MonitorName, monitor: &'a ChannelMonitor<ChannelSigner>,
-	) -> Pin<Box<dyn MaybeSendableFuture<Output = Result<(), io::Error>> + 'static>> {
+	fn persist_new_channel<'a, ChannelSigner: EcdsaChannelSigner + 'a>(
+		self: Arc<Self>, monitor_name: MonitorName, monitor: &ChannelMonitor<ChannelSigner>,
+	) -> impl Future<Output = Result<(), io::Error>> + 'a
+	where
+		Self: 'a,
+	{
 		// Determine the proper key for this monitor
 		let monitor_key = monitor_name.to_string();
 		// Serialize and write the new monitor
@@ -1544,15 +1705,120 @@ impl<
 			monitor_bytes.extend_from_slice(MONITOR_UPDATING_PERSISTER_PREPEND_SENTINEL);
 		}
 		monitor.write(&mut monitor_bytes).unwrap();
+		let primary = CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE;
+		let secondary = CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE;
+		// When claim-data externalization is off (the default), this is byte-for-byte upstream:
 		// Note that this is NOT an async function, but rather calls the *sync* KVStore write
 		// method, allowing it to do its queueing immediately, and then return a future for the
 		// completion of the write. This ensures monitor persistence ordering is preserved.
-		let primary = CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE;
-		let secondary = CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE;
-		// There's no real reason why this needs to be boxed, but dropping it rams into the "hidden
-		// type for impl... captures lifetime that does not appear in bounds" issue. This can
-		// trivially be dropped once we upgrade to edition 2024/MSRV 1.85.
-		Box::pin(self.kv_store.write(primary, secondary, monitor_key.as_str(), monitor_bytes))
+		//
+		// When externalization is on, the blob write must instead be *called* only after the
+		// side-store `Append` writes and every prior persistence operation for this monitor have
+		// durably completed, so we defer it into the future and order it via the monitor's
+		// `WriteGate` chain (see `WriteGate` for why call-time ordering is insufficient here).
+		let mut gated = None;
+		let mut upstream_blob_fut: Option<
+			Pin<Box<dyn MaybeSendableFuture<Output = Result<(), io::Error>> + 'static>>,
+		> = None;
+		if monitor.is_claim_data_externalized() {
+			let (append_futs, deferred_null_sources) = self.claim_writes(&monitor_key, monitor);
+			let (prev_gate, gate_guard) = self.install_claim_gate(&monitor_key);
+			gated = Some((append_futs, deferred_null_sources, prev_gate, gate_guard, monitor_bytes));
+		} else {
+			upstream_blob_fut = Some(Box::pin(self.kv_store.write(
+				primary,
+				secondary,
+				monitor_key.as_str(),
+				monitor_bytes,
+			)));
+		}
+		async move {
+			if let Some((append_futs, null_sources, prev_gate, gate_guard, bytes)) = gated {
+				for fut in append_futs {
+					fut.await?;
+				}
+				if let Some(prev_gate) = prev_gate {
+					if !WriteGateWait(prev_gate).await {
+						return Err(io::Error::new(
+							io::ErrorKind::Other,
+							"A previous persistence operation for this monitor failed; refusing \
+							 to advance the monitor blob past potentially-lost claim data",
+						));
+					}
+				}
+				self.kv_store.write(primary, secondary, monitor_key.as_str(), bytes).await?;
+				// The chain-ordering property only covers the blob and the write-ahead `Append`s;
+				// `NullSources` below are write-behind and excluded on purpose: losing one is
+				// benign (see `ClaimPersistOp`), so a successor may safely write a newer blob
+				// while they are still in flight.
+				gate_guard.complete_ok();
+				let claim_primary = CHANNEL_MONITOR_CLAIM_PERSISTENCE_PRIMARY_NAMESPACE;
+				for (key, value) in null_sources {
+					self.kv_store.write(claim_primary, &monitor_key, &key, value).await?;
+				}
+				Ok(())
+			} else {
+				upstream_blob_fut
+					.expect("exactly one of the two persistence paths is always populated")
+					.await
+			}
+		}
+	}
+
+	/// Drains the monitor's pending externalized claim deltas, splitting them into their two
+	/// ordering classes (see [`ClaimPersistOp`]):
+	///
+	/// * `Append`s are write-ahead: their `kv_store.write` is called here (so successive writes to
+	///   the same side-store key retain call order) and the returned futures must complete before
+	///   the monitor blob/update write is *called*.
+	/// * `NullSources` are write-behind: returned as raw `(key, value)` pairs, to be written only
+	///   after the blob/update write durably completed. They overwrite the only durable copy of
+	///   the pre-revocation `HTLCSource`s, so issuing them any earlier would open a crash window
+	///   in which a reloaded monitor is missing sources for its still-live previous commitment.
+	///
+	/// Both vecs are empty when claim-data externalization is disabled, keeping callers
+	/// byte-for-byte identical to upstream in the default case.
+	fn claim_writes<ChannelSigner: EcdsaChannelSigner>(
+		&self, monitor_key: &str, monitor: &ChannelMonitor<ChannelSigner>,
+	) -> (
+		Vec<Pin<Box<dyn MaybeSendableFuture<Output = Result<(), io::Error>> + 'static>>>,
+		Vec<(String, Vec<u8>)>,
+	) {
+		if !monitor.is_claim_data_externalized() {
+			return (Vec::new(), Vec::new());
+		}
+		let primary = CHANNEL_MONITOR_CLAIM_PERSISTENCE_PRIMARY_NAMESPACE;
+		let mut append_futs = Vec::new();
+		let mut deferred_null_sources = Vec::new();
+		for op in monitor.take_pending_claim_persist() {
+			let is_append = matches!(op, ClaimPersistOp::Append { .. });
+			let (txid, htlcs) = op.into_parts();
+			let mut value = Vec::new();
+			write_claim_htlcs(&htlcs, &mut value).expect("writing to a Vec is infallible");
+			if is_append {
+				let fut = self.kv_store.write(primary, monitor_key, &txid.to_string(), value);
+				append_futs.push(Box::pin(fut)
+					as Pin<
+						Box<dyn MaybeSendableFuture<Output = Result<(), io::Error>> + 'static>,
+					>);
+			} else {
+				deferred_null_sources.push((txid.to_string(), value));
+			}
+		}
+		(append_futs, deferred_null_sources)
+	}
+
+	/// Installs a new tail [`WriteGate`] for `monitor_key`, returning the previous tail (which the
+	/// new operation must wait on before issuing its blob/update write) and the guard which
+	/// completes the new gate.
+	///
+	/// Must be called synchronously within the persistence call so the chain order matches the
+	/// caller's issue order (the `ChainMonitor` serializes persistence calls per monitor).
+	fn install_claim_gate(&self, monitor_key: &str) -> (Option<Arc<WriteGate>>, WriteGateGuard) {
+		let mut gates = self.claim_gates.lock().unwrap();
+		let my_gate = Arc::new(WriteGate::new());
+		let prev_gate = gates.insert(monitor_key.to_string(), Arc::clone(&my_gate));
+		(prev_gate, WriteGateGuard(my_gate))
 	}
 
 	fn update_persisted_channel<'a, ChannelSigner: EcdsaChannelSigner + 'a>(
@@ -1574,13 +1840,55 @@ impl<
 				let monitor_key = monitor_name.to_string();
 				let update_name = UpdateName::from(update.update_id);
 				let primary = CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE;
+				// When claim-data externalization is enabled, this update participates in the
+				// monitor's `WriteGate` chain (installed synchronously here, so chain order
+				// matches the caller's issue order): its write-ahead `Append` side-store writes
+				// and all prior persistence operations for this monitor must durably complete
+				// before the update write is *called*, and its write-behind `NullSources` writes
+				// are only issued after the update write completes. See `ClaimPersistOp` and
+				// `WriteGate`. Both vecs are empty (and `gated` is `None`) when externalization
+				// is disabled, keeping this path byte-for-byte upstream.
+				let (append_futs, null_sources) = self.claim_writes(&monitor_key, monitor);
+				let gated = if monitor.is_claim_data_externalized() {
+					Some(self.install_claim_gate(&monitor_key))
+				} else {
+					None
+				};
 				// Note that this is NOT an async function, but rather calls the *sync* KVStore
 				// write method, allowing it to do its queueing immediately, and then return a
 				// future for the completion of the write. This ensures monitor persistence
 				// ordering is preserved.
 				let encoded = update.encode();
 				res_a = Some(async move {
-					self.kv_store.write(primary, &monitor_key, update_name.as_str(), encoded).await
+					if let Some((prev_gate, gate_guard)) = gated {
+						for fut in append_futs {
+							fut.await?;
+						}
+						if let Some(prev_gate) = prev_gate {
+							if !WriteGateWait(prev_gate).await {
+								return Err(io::Error::new(
+									io::ErrorKind::Other,
+									"A previous persistence operation for this monitor failed; \
+									 refusing to write a monitor update past potentially-lost \
+									 claim data",
+								));
+							}
+						}
+						self.kv_store
+							.write(primary, &monitor_key, update_name.as_str(), encoded)
+							.await?;
+						gate_guard.complete_ok();
+						let claim_primary = CHANNEL_MONITOR_CLAIM_PERSISTENCE_PRIMARY_NAMESPACE;
+						for (key, value) in null_sources {
+							self.kv_store.write(claim_primary, &monitor_key, &key, value).await?;
+						}
+						Ok(())
+					} else {
+						debug_assert!(append_futs.is_empty() && null_sources.is_empty());
+						self.kv_store
+							.write(primary, &monitor_key, update_name.as_str(), encoded)
+							.await
+					}
 				});
 			} else {
 				// We could write this update, but it meets criteria of our design that calls for a full monitor write.
@@ -1588,7 +1896,7 @@ impl<
 				// write method, allowing it to do its queueing immediately, and then return a
 				// future for the completion of the write. This ensures monitor persistence
 				// ordering is preserved. This, thus, must happen before any await we do below.
-				let write_fut = self.persist_new_channel(monitor_name, monitor);
+				let write_fut = Arc::clone(&self).persist_new_channel(monitor_name, monitor);
 				let latest_update_id = monitor.get_latest_update_id();
 
 				res_b = Some(async move {
@@ -1617,7 +1925,7 @@ impl<
 			// Note that this is NOT an async function, but rather calls the *sync* KVStore write
 			// method, allowing it to do its queueing immediately, and then return a future for the
 			// completion of the write. This ensures monitor persistence ordering is preserved.
-			res_c = Some(self.persist_new_channel(monitor_name, monitor));
+			res_c = Some(Arc::clone(&self).persist_new_channel(monitor_name, monitor));
 		}
 		async move {
 			// Complete any pending future(s). Note that to keep one return type we have to end
@@ -2272,5 +2580,324 @@ mod tests {
 	fn kvstore_trait_object_usage() {
 		let store: Arc<dyn KVStoreSync + Send + Sync> = Arc::new(TestStore::new(false));
 		assert!(persist_fn::<_, TestChannelSigner>(Arc::clone(&store)));
+	}
+
+	#[test]
+	fn write_gate_chain_semantics() {
+		// A gate completed ok reports true, exactly once, first-completion-wins.
+		let gate = Arc::new(WriteGate::new());
+		gate.complete(true);
+		gate.complete(false);
+		assert!(poll_sync_future(WriteGateWait(Arc::clone(&gate))));
+
+		// A guard dropped without `complete_ok` poisons its gate.
+		let gate = Arc::new(WriteGate::new());
+		drop(WriteGateGuard(Arc::clone(&gate)));
+		assert!(!poll_sync_future(WriteGateWait(Arc::clone(&gate))));
+
+		// A pending waiter is woken on completion.
+		let gate = Arc::new(WriteGate::new());
+		let mut wait = WriteGateWait(Arc::clone(&gate));
+		let mut waker = dummy_waker();
+		let mut ctx = task::Context::from_waker(&mut waker);
+		assert!(core::pin::Pin::new(&mut wait).poll(&mut ctx).is_pending());
+		WriteGateGuard(Arc::clone(&gate)).complete_ok();
+		match core::pin::Pin::new(&mut wait).poll(&mut ctx) {
+			task::Poll::Ready(ok) => assert!(ok),
+			task::Poll::Pending => panic!("gate must be ready after completion"),
+		}
+	}
+
+	// Reads an owned `ChannelMonitor` copy out of serialized monitor bytes.
+	fn read_monitor_copy<'a>(
+		bytes: &[u8], keys: &'a test_utils::TestKeysInterface,
+	) -> ChannelMonitor<TestChannelSigner> {
+		let mut cursor = io::Cursor::new(bytes);
+		<(BlockLocator, ChannelMonitor<TestChannelSigner>)>::read(&mut cursor, (keys, keys))
+			.unwrap()
+			.1
+	}
+
+	// Sorted, byte-level dump of a monitor's resident counterparty claim map, for equality
+	// assertions without poking at private fields.
+	fn sorted_claim_dump(monitor: &ChannelMonitor<TestChannelSigner>) -> Vec<(Txid, Vec<u8>)> {
+		let mut dump = monitor.claim_data_for_migration_serialized();
+		dump.sort();
+		dump
+	}
+
+	#[test]
+	fn test_claim_data_externalization_persister_flow() {
+		// End-to-end flow of claim-data externalization through the (sync) persister: migrate a
+		// fat monitor's claim map into the side store, enable externalization, thin-persist,
+		// read back (repopulating the working set), generate an `Append` delta and verify it is
+		// durably written ahead and correctly reloaded.
+		let chanmon_cfgs = create_chanmon_cfgs(2);
+		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+		let chan = create_announced_chan_between_nodes(&nodes, 0, 1);
+		send_payment(&nodes[0], &[&nodes[1]], 1_000_000);
+		send_payment(&nodes[0], &[&nodes[1]], 2_000_000);
+
+		let kv_store = TestStore::new(false);
+		let persister = MonitorUpdatingPersister::new(
+			&kv_store,
+			&chanmon_cfgs[0].logger,
+			5,
+			&chanmon_cfgs[0].keys_manager,
+			&chanmon_cfgs[0].keys_manager,
+			&chanmon_cfgs[0].tx_broadcaster,
+			&chanmon_cfgs[0].fee_estimator,
+		);
+
+		// Owned copy of the live monitor, then migrate + enable externalization on it.
+		let live_bytes = crate::get_monitor!(nodes[0], chan.2).encode();
+		let monitor = read_monitor_copy(&live_bytes, &chanmon_cfgs[0].keys_manager);
+		let monitor_name = monitor.persistence_key();
+		let monitor_key = monitor_name.to_string();
+		let claim_ns = CHANNEL_MONITOR_CLAIM_PERSISTENCE_PRIMARY_NAMESPACE;
+		for (txid, bytes) in monitor.claim_data_for_migration_serialized() {
+			KVStoreSync::write(&kv_store, claim_ns, &monitor_key, &txid.to_string(), bytes)
+				.unwrap();
+		}
+		monitor.set_claim_data_externalized(true);
+		let working_set = sorted_claim_dump(&monitor);
+		assert!(!working_set.is_empty());
+
+		// Thin persist + read-back: flag restored, resident working set fully repopulated.
+		let res = Persist::<TestChannelSigner>::persist_new_channel(&persister, monitor_name, &monitor);
+		assert_eq!(res, ChannelMonitorUpdateStatus::Completed);
+		let (_, read_back) = persister.read_channel_monitor_with_updates(&monitor_key).unwrap();
+		assert!(read_back.is_claim_data_externalized());
+		assert_eq!(sorted_claim_dump(&read_back), working_set);
+
+		// A new counterparty commitment generates an `Append` delta; a full-monitor persist must
+		// write it (ahead of the blob) and a reload must surface the new (now-current) entry.
+		let secp_ctx = bitcoin::secp256k1::Secp256k1::new();
+		let dummy_key = bitcoin::secp256k1::PublicKey::from_secret_key(
+			&secp_ctx,
+			&bitcoin::secp256k1::SecretKey::from_slice(&[42; 32]).unwrap(),
+		);
+		let next_txid = {
+			use bitcoin::hashes::{sha256::Hash as Sha256, Hash};
+			Txid::from_byte_array(Sha256::hash(b"next commitment").to_byte_array())
+		};
+		let next_htlcs = vec![(
+			crate::ln::chan_utils::HTLCOutputInCommitment {
+				offered: true,
+				amount_msat: 1_000_000,
+				cltv_expiry: 42,
+				payment_hash: crate::types::payment::PaymentHash([9; 32]),
+				transaction_output_index: Some(0),
+			},
+			None,
+		)];
+		monitor.provide_latest_counterparty_commitment_tx(next_txid, next_htlcs, 1, dummy_key);
+		let res =
+			Persist::<TestChannelSigner>::update_persisted_channel(&persister, monitor_name, None, &monitor);
+		assert_eq!(res, ChannelMonitorUpdateStatus::Completed);
+		let stored_delta =
+			KVStoreSync::read(&kv_store, claim_ns, &monitor_key, &next_txid.to_string()).unwrap();
+		assert!(!stored_delta.is_empty(), "Append delta must be durably written");
+		let (_, read_back) = persister.read_channel_monitor_with_updates(&monitor_key).unwrap();
+		assert!(read_back.is_claim_data_externalized());
+		assert_eq!(sorted_claim_dump(&read_back), sorted_claim_dump(&monitor));
+	}
+
+	#[test]
+	fn test_claim_data_externalization_update_replay() {
+		// Exercises the gated *update-write* path (res_a) with real `ChannelMonitorUpdate`s on an
+		// externalized monitor, including a full payment cycle (new counterparty commitments AND
+		// revocations, i.e. both `Append` write-ahead and `NullSources` write-behind deltas), and
+		// verifies a thin snapshot + update files reload (replaying the updates on the
+		// repopulated working set) reproduces the exact in-memory claim state.
+		let chanmon_cfgs = create_chanmon_cfgs(2);
+		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+		let chan = create_announced_chan_between_nodes(&nodes, 0, 1);
+		send_payment(&nodes[0], &[&nodes[1]], 1_000_000);
+
+		let kv_store = TestStore::new(false);
+		let persister = MonitorUpdatingPersister::new(
+			&kv_store,
+			&chanmon_cfgs[0].logger,
+			5,
+			&chanmon_cfgs[0].keys_manager,
+			&chanmon_cfgs[0].keys_manager,
+			&chanmon_cfgs[0].tx_broadcaster,
+			&chanmon_cfgs[0].fee_estimator,
+		);
+
+		// Snapshot the live monitor, migrate + enable + thin-persist through the persister.
+		let live_bytes = crate::get_monitor!(nodes[0], chan.2).encode();
+		let monitor = read_monitor_copy(&live_bytes, &chanmon_cfgs[0].keys_manager);
+		let monitor_name = monitor.persistence_key();
+		let monitor_key = monitor_name.to_string();
+		let claim_ns = CHANNEL_MONITOR_CLAIM_PERSISTENCE_PRIMARY_NAMESPACE;
+		for (txid, bytes) in monitor.claim_data_for_migration_serialized() {
+			KVStoreSync::write(&kv_store, claim_ns, &monitor_key, &txid.to_string(), bytes)
+				.unwrap();
+		}
+		monitor.set_claim_data_externalized(true);
+		let res = Persist::<TestChannelSigner>::persist_new_channel(&persister, monitor_name, &monitor);
+		assert_eq!(res, ChannelMonitorUpdateStatus::Completed);
+		let baseline_updates = nodes[0]
+			.chain_monitor
+			.monitor_updates
+			.lock()
+			.unwrap()
+			.get(&chan.2)
+			.map(|updates| updates.len())
+			.unwrap_or(0);
+
+		// Drive real channel activity (two payment cycles = commitment advances + revocations),
+		// then replay the recorded updates through the externalized snapshot, persisting each via
+		// the gated update path.
+		send_payment(&nodes[0], &[&nodes[1]], 2_000_000);
+		send_payment(&nodes[0], &[&nodes[1]], 3_000_000);
+		let updates = nodes[0]
+			.chain_monitor
+			.monitor_updates
+			.lock()
+			.unwrap()
+			.get(&chan.2)
+			.unwrap()
+			.clone();
+		assert!(updates.len() > baseline_updates);
+		for update in &updates[baseline_updates..] {
+			monitor
+				.update_monitor(
+					update,
+					&chanmon_cfgs[0].tx_broadcaster,
+					&chanmon_cfgs[0].fee_estimator,
+					&chanmon_cfgs[0].logger,
+				)
+				.unwrap();
+			let res = Persist::<TestChannelSigner>::update_persisted_channel(
+				&persister,
+				monitor_name,
+				Some(update),
+				&monitor,
+			);
+			assert_eq!(res, ChannelMonitorUpdateStatus::Completed);
+		}
+
+		// Reload: thin snapshot + repopulated working set + update replay must reproduce the
+		// exact in-memory claim state (all deltas — Appends and NullSources — durably applied).
+		let (_, read_back) = persister.read_channel_monitor_with_updates(&monitor_key).unwrap();
+		assert!(read_back.is_claim_data_externalized());
+		assert_eq!(read_back.get_latest_update_id(), monitor.get_latest_update_id());
+		assert_eq!(sorted_claim_dump(&read_back), sorted_claim_dump(&monitor));
+	}
+
+	/// A [`KVStoreSync`] whose writes can be made to fail on demand, for exercising the
+	/// write-failure (chain-poisoning) semantics of externalized claim persistence.
+	struct FailingStore {
+		inner: TestStore,
+		fail_writes: core::sync::atomic::AtomicBool,
+	}
+
+	impl KVStoreSync for FailingStore {
+		fn read(
+			&self, primary_namespace: &str, secondary_namespace: &str, key: &str,
+		) -> Result<Vec<u8>, io::Error> {
+			KVStoreSync::read(&self.inner, primary_namespace, secondary_namespace, key)
+		}
+		fn write(
+			&self, primary_namespace: &str, secondary_namespace: &str, key: &str, buf: Vec<u8>,
+		) -> Result<(), io::Error> {
+			if self.fail_writes.load(core::sync::atomic::Ordering::Relaxed) {
+				return Err(io::Error::new(io::ErrorKind::Other, "injected write failure"));
+			}
+			KVStoreSync::write(&self.inner, primary_namespace, secondary_namespace, key, buf)
+		}
+		fn remove(
+			&self, primary_namespace: &str, secondary_namespace: &str, key: &str, lazy: bool,
+		) -> Result<(), io::Error> {
+			KVStoreSync::remove(&self.inner, primary_namespace, secondary_namespace, key, lazy)
+		}
+		fn list(
+			&self, primary_namespace: &str, secondary_namespace: &str,
+		) -> Result<Vec<String>, io::Error> {
+			KVStoreSync::list(&self.inner, primary_namespace, secondary_namespace)
+		}
+	}
+
+	#[test]
+	fn test_claim_externalization_write_failure_freezes_store() {
+		// Once a drained claim delta fails to persist, it is lost from memory and only replay on
+		// top of the last durable blob can regenerate it. The persister must therefore refuse to
+		// advance the monitor blob past the failure (chain poisoning), leaving the on-disk state
+		// frozen at its last consistent snapshot — which must still load cleanly.
+		let chanmon_cfgs = create_chanmon_cfgs(2);
+		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+		let chan = create_announced_chan_between_nodes(&nodes, 0, 1);
+		send_payment(&nodes[0], &[&nodes[1]], 1_000_000);
+
+		let kv_store = FailingStore {
+			inner: TestStore::new(false),
+			fail_writes: core::sync::atomic::AtomicBool::new(false),
+		};
+		let persister = MonitorUpdatingPersister::new(
+			&kv_store,
+			&chanmon_cfgs[0].logger,
+			5,
+			&chanmon_cfgs[0].keys_manager,
+			&chanmon_cfgs[0].keys_manager,
+			&chanmon_cfgs[0].tx_broadcaster,
+			&chanmon_cfgs[0].fee_estimator,
+		);
+
+		let live_bytes = crate::get_monitor!(nodes[0], chan.2).encode();
+		let monitor = read_monitor_copy(&live_bytes, &chanmon_cfgs[0].keys_manager);
+		let monitor_name = monitor.persistence_key();
+		let monitor_key = monitor_name.to_string();
+		let claim_ns = CHANNEL_MONITOR_CLAIM_PERSISTENCE_PRIMARY_NAMESPACE;
+		for (txid, bytes) in monitor.claim_data_for_migration_serialized() {
+			KVStoreSync::write(&kv_store, claim_ns, &monitor_key, &txid.to_string(), bytes)
+				.unwrap();
+		}
+		monitor.set_claim_data_externalized(true);
+		let working_set = sorted_claim_dump(&monitor);
+
+		let res = Persist::<TestChannelSigner>::persist_new_channel(&persister, monitor_name, &monitor);
+		assert_eq!(res, ChannelMonitorUpdateStatus::Completed);
+		let blob_ns = CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE;
+		let blob_sec = CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE;
+		let good_blob = KVStoreSync::read(&kv_store, blob_ns, blob_sec, &monitor_key).unwrap();
+
+		// Inject failure, then generate an Append delta and try to persist: the delta write
+		// fails, the blob write must not even be attempted.
+		kv_store.fail_writes.store(true, core::sync::atomic::Ordering::Relaxed);
+		let secp_ctx = bitcoin::secp256k1::Secp256k1::new();
+		let dummy_key = bitcoin::secp256k1::PublicKey::from_secret_key(
+			&secp_ctx,
+			&bitcoin::secp256k1::SecretKey::from_slice(&[42; 32]).unwrap(),
+		);
+		let next_txid = {
+			use bitcoin::hashes::{sha256::Hash as Sha256, Hash};
+			Txid::from_byte_array(Sha256::hash(b"lost commitment").to_byte_array())
+		};
+		monitor.provide_latest_counterparty_commitment_tx(next_txid, Vec::new(), 1, dummy_key);
+		let res = Persist::<TestChannelSigner>::update_persisted_channel(&persister, monitor_name, None, &monitor);
+		assert_eq!(res, ChannelMonitorUpdateStatus::UnrecoverableError);
+		assert_eq!(KVStoreSync::read(&kv_store, blob_ns, blob_sec, &monitor_key).unwrap(), good_blob);
+
+		// Even after writes work again, the chain stays poisoned: the drained delta is gone, so
+		// advancing the blob would orphan it. The blob must remain untouched.
+		kv_store.fail_writes.store(false, core::sync::atomic::Ordering::Relaxed);
+		let res = Persist::<TestChannelSigner>::persist_new_channel(&persister, monitor_name, &monitor);
+		assert_eq!(res, ChannelMonitorUpdateStatus::UnrecoverableError);
+		assert_eq!(KVStoreSync::read(&kv_store, blob_ns, blob_sec, &monitor_key).unwrap(), good_blob);
+		assert!(KVStoreSync::read(&kv_store, claim_ns, &monitor_key, &next_txid.to_string()).is_err());
+
+		// The frozen on-disk state is the last consistent snapshot and still loads cleanly.
+		let (_, read_back) = persister.read_channel_monitor_with_updates(&monitor_key).unwrap();
+		assert!(read_back.is_claim_data_externalized());
+		assert_eq!(sorted_claim_dump(&read_back), working_set);
 	}
 }

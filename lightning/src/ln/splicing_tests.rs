@@ -12021,3 +12021,124 @@ fn test_channel_details_waiting_on_lock_below_rbf_feerate() {
 	nodes[0].node.get_and_clear_pending_msg_events();
 	nodes[1].node.get_and_clear_pending_msg_events();
 }
+
+#[test]
+fn test_claim_data_externalization_splice_promotion() {
+	// Verifies that promoting a pending `FundingScope` to primary (splice lock) seeds the
+	// externalized claim side store with the promoted scope's full counterparty claim map.
+	// Without that seeding, the next thin monitor write would orphan the promoted scope's claim
+	// data entirely: the monitor would become unloadable (missing required side-store entries)
+	// and the data would exist nowhere durable.
+	//
+	// We snapshot the live monitor into an owned, externalized copy before the splice, then
+	// replay the real `ChannelMonitorUpdate` stream (recorded by the test chain monitor) on it —
+	// exactly what a thin-persisted monitor experiences across the splice — and assert that the
+	// emitted `Append` deltas cover everything a thin round-trip needs after promotion.
+	use crate::chain::channelmonitor::{write_claim_htlcs, ChannelMonitor};
+	use crate::chain::BlockLocator;
+	use crate::io;
+	use crate::prelude::*;
+	use crate::util::ser::ReadableArgs;
+
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let mut config = test_default_channel_config();
+	config.channel_handshake_config.announced_channel_max_inbound_htlc_value_in_flight_percentage =
+		100;
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, Some(config)]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let initial_channel_value_sat = 100_000;
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, initial_channel_value_sat, 0);
+	let _ = send_payment(&nodes[0], &[&nodes[1]], 100_000);
+
+	// Owned, externalized copy of the live monitor, with its claim map migrated into a simulated
+	// side store.
+	let read_monitor = |bytes: &[u8]| {
+		<(BlockLocator, ChannelMonitor<_>)>::read(
+			&mut io::Cursor::new(bytes),
+			(&nodes[0].keys_manager.backing, &nodes[0].keys_manager.backing),
+		)
+		.unwrap()
+		.1
+	};
+	let monitor = read_monitor(&get_monitor!(nodes[0], channel_id).encode());
+	let mut side_store = new_hash_map();
+	for (txid, bytes) in monitor.claim_data_for_migration_serialized() {
+		side_store.insert(txid, bytes);
+	}
+	monitor.set_claim_data_externalized(true);
+	assert!(monitor.take_pending_claim_persist().is_empty());
+	let baseline_updates = nodes[0]
+		.chain_monitor
+		.monitor_updates
+		.lock()
+		.unwrap()
+		.get(&channel_id)
+		.map(|updates| updates.len())
+		.unwrap_or(0);
+
+	// Run a real splice through to lock, with a payment mid-splice so commitment updates (and a
+	// revocation) happen while the pending scope exists.
+	let added_value = Amount::from_sat(initial_channel_value_sat * 2);
+	provide_utxo_reserves(&nodes, 2, added_value * 3 / 4);
+	let funding_contribution = do_initiate_splice_in(&nodes[0], &nodes[1], channel_id, added_value);
+	let (splice_tx, _) = splice_channel(&nodes[0], &nodes[1], channel_id, funding_contribution);
+	mine_transaction(&nodes[0], &splice_tx);
+	mine_transaction(&nodes[1], &splice_tx);
+	let htlc_limit_msat = nodes[0].node.list_channels()[0].next_outbound_htlc_limit_msat;
+	let _ = send_payment(&nodes[0], &[&nodes[1]], htlc_limit_msat);
+	lock_splice_after_blocks(&nodes[0], &nodes[1], ANTI_REORG_DELAY - 1);
+	let _ = send_payment(&nodes[0], &[&nodes[1]], 100_000);
+
+	// Replay the recorded update stream on the externalized copy (as a thin-reloaded monitor
+	// would), mirroring every drained delta into the simulated side store.
+	let updates = nodes[0]
+		.chain_monitor
+		.monitor_updates
+		.lock()
+		.unwrap()
+		.get(&channel_id)
+		.unwrap()
+		.clone();
+	assert!(updates.len() > baseline_updates);
+	for update in &updates[baseline_updates..] {
+		monitor
+			.update_monitor(update, nodes[0].tx_broadcaster, nodes[0].fee_estimator, nodes[0].logger)
+			.unwrap();
+		for op in monitor.take_pending_claim_persist() {
+			let (txid, htlcs) = op.into_parts();
+			let mut bytes = Vec::new();
+			write_claim_htlcs(&htlcs, &mut bytes).unwrap();
+			side_store.insert(txid, bytes);
+		}
+	}
+
+	// The splice must have been promoted on the copy.
+	assert_eq!(monitor.get_funding_txo().txid, splice_tx.compute_txid());
+	assert!(monitor.is_claim_data_externalized());
+
+	// Thin round-trip: everything the reloaded monitor requires must be present in the side
+	// store (i.e. promotion emitted `Append`s for the promoted scope), and repopulating must
+	// reproduce the copy's resident working set exactly.
+	let thin_rt = read_monitor(&monitor.encode());
+	assert!(thin_rt.is_claim_data_externalized());
+	let required = thin_rt.required_resident_claim_txids();
+	assert!(!required.is_empty());
+	let entries: Vec<_> = required
+		.iter()
+		.map(|txid| {
+			let bytes = side_store
+				.get(txid)
+				.expect("promotion must have seeded the side store with the new scope's entries");
+			(*txid, bytes.clone())
+		})
+		.collect();
+	thin_rt.provide_claim_entries_serialized(entries).unwrap();
+	let mut expected = monitor.claim_data_for_migration_serialized();
+	let mut actual = thin_rt.claim_data_for_migration_serialized();
+	expected.sort();
+	actual.sort();
+	assert_eq!(actual, expected, "thin reload after splice promotion must reproduce the resident claim map");
+}
