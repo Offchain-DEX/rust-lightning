@@ -63,7 +63,7 @@ use core::time::Duration;
 #[cfg_attr(feature = "std", doc = "")]
 #[cfg_attr(
 	feature = "std",
-	doc = "This can be used in a `no_std` environment, where [`std::time::SystemTime`] is not available and the current time is supplied by the caller."
+	doc = "This can be used in a `no_std` environment, where [`web_time::SystemTime`] is not available and the current time is supplied by the caller."
 )]
 pub fn create_phantom_invoice<ES: EntropySource, NS: NodeSigner, L: Logger>(
 	amt_msat: Option<u64>, payment_hash: Option<PaymentHash>, description: String,
@@ -126,7 +126,7 @@ pub fn create_phantom_invoice<ES: EntropySource, NS: NodeSigner, L: Logger>(
 #[cfg_attr(feature = "std", doc = "")]
 #[cfg_attr(
 	feature = "std",
-	doc = "This version can be used in a `no_std` environment, where [`std::time::SystemTime`] is not available and the current time is supplied by the caller."
+	doc = "This version can be used in a `no_std` environment, where [`web_time::SystemTime`] is not available and the current time is supplied by the caller."
 )]
 pub fn create_phantom_invoice_with_description_hash<
 	ES: EntropySource,
