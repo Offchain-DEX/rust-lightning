@@ -34,11 +34,18 @@ electrum-rustls-ring = ["_electrum", "electrum-client/use-rustls-ring"]
 
 [dependencies]
 web-time = { version = "1", features = ["serde"] }
-lightning = { version = "0.3.0-beta1", path = "../lightning", default-features = false, features = ["std"] }
+# NOTE(fork): upstream forces `lightning/std` here, but that unifies `lightning/std` across the
+# whole graph and makes `MaybeSend = Send` on wasm32 (single-threaded), breaking the async
+# `KVStore`/`Persist` with non-`Send` browser backends. Keep it default-off (as pre-bump) so wasm
+# builds; native builds still get `lightning/std` via feature unification from other crates.
+lightning = { version = "0.3.0-beta1", path = "../lightning", default-features = false }
 lightning-macros = { version = "0.2", path = "../lightning-macros", default-features = false }
 bitcoin = { version = "0.32.2", default-features = false }
 futures = { version = "0.3", optional = true }
-esplora-client = { version = "0.13", default-features = false, optional = true }
+# NOTE(fork): upstream 0.13 switched the async-https transport from `reqwest` to `bitreq`
+# (raw TCP + rustls), which cannot run on wasm32-unknown-unknown — browsers only expose HTTP
+# via fetch, which `reqwest` uses. Stay on 0.12 so the esplora sync client keeps working in wasm.
+esplora-client = { version = "0.12", default-features = false, optional = true }
 electrum-client = { version = "0.25", optional = true, default-features = false, features = ["proxy"] }
 
 [dev-dependencies]
