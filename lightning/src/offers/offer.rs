@@ -31,7 +31,7 @@
 //!
 //! # use lightning::blinded_path::message::BlindedMessagePath;
 //! # #[cfg(feature = "std")]
-//! # use std::time::SystemTime;
+//! # use web_time::SystemTime;
 //! #
 //! # fn create_blinded_path() -> BlindedMessagePath { unimplemented!() }
 //! # fn create_another_blinded_path() -> BlindedMessagePath { unimplemented!() }
@@ -112,7 +112,7 @@ use crate::prelude::*;
 
 use bitcoin::hex::impl_fmt_traits;
 #[cfg(feature = "std")]
-use std::time::SystemTime;
+use web_time::SystemTime;
 
 pub(super) const IV_BYTES_WITH_METADATA: &[u8; IV_LEN] = b"LDK Offer ~~~~~~";
 pub(super) const IV_BYTES_WITHOUT_METADATA: &[u8; IV_LEN] = b"LDK Offer v2~~~~";
