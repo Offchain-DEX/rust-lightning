@@ -2294,6 +2294,17 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 		self.inner.lock().unwrap().get_funding_script()
 	}
 
+	/// Whether either funding transaction for this channel has ever been observed in a block.
+	///
+	/// This reports observation, not current confirmation: it is set the first time the funding
+	/// is seen on-chain and is never reset, even if a reorg leaves the funding unconfirmed. A
+	/// `false` therefore means this node has never seen the channel's funding confirmed, which
+	/// callers can use to tell a channel that never made it on-chain apart from one whose
+	/// funding merely cannot be looked up right now.
+	pub fn funding_seen_onchain(&self) -> bool {
+		self.inner.lock().unwrap().funding_seen_onchain
+	}
+
 	/// Gets the channel_id of the channel this ChannelMonitor is monitoring for.
 	pub fn channel_id(&self) -> ChannelId {
 		self.inner.lock().unwrap().channel_id()
