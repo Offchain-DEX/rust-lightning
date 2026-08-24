@@ -1944,7 +1944,7 @@ impl<
 		}
 	}
 
-	async fn archive_persisted_channel(&self, monitor_name: MonitorName) {
+	async fn archive_persisted_channel(self: &Arc<Self>, monitor_name: MonitorName) {
 		let monitor_key = monitor_name.to_string();
 		let monitor = match self.read_channel_monitor_with_updates(&monitor_key).await {
 			Ok((_best_block, monitor)) => monitor,
@@ -1959,6 +1959,64 @@ impl<
 		let primary = CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE;
 		let secondary = CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE;
 		let _ = self.kv_store.remove(primary, secondary, &monitor_key, true).await;
+
+		// The externalized stores this persister maintains alongside the
+		// blob would otherwise outlive it forever: archival is the only
+		// moment a monitor's side data stops having a reader. A monitor
+		// only reaches here fully resolved (funds swept / irrelevant),
+		// so its counterparty-claim map — revocation-punishment data
+		// that must NEVER be pruned for a live channel — and any update
+		// tail from the last consolidation window are both garbage now.
+		// One high-traffic channel accumulates millions of claim
+		// entries; the sweep is safe to run here because the async
+		// persister's archival entry point
+		// (`spawn_async_archive_persisted_channel`) already runs this
+		// whole function on a spawned background future, and the sync
+		// `Persist` wrapper can never see externalized claim data (it
+		// debug-asserts against such monitors), so its claim namespace
+		// list is empty there. Failure aborts the sweep midway — the
+		// entries are inert garbage, so a partial sweep corrupts
+		// nothing and a later pass can finish the job.
+		let claim_primary = CHANNEL_MONITOR_CLAIM_PERSISTENCE_PRIMARY_NAMESPACE;
+		if let Ok(claim_keys) = self.kv_store.list(claim_primary, &monitor_key).await {
+			for (i, key) in claim_keys.iter().enumerate() {
+				// Periodic non-lazy remove = a flush barrier: the await
+				// only returns once the store committed the batch, so a
+				// multi-million-entry sweep cannot flood an unbounded
+				// write queue ahead of consensus-critical monitor
+				// writes; the queue depth stays bounded by the chunk.
+				let lazy = (i + 1) % 512 != 0;
+				if let Err(e) =
+					self.kv_store.remove(claim_primary, &monitor_key, key, lazy).await
+				{
+					log_error!(
+						self.logger,
+						"Failed to remove archived monitor {}'s claim entry {}: {}",
+						monitor_key.as_str(),
+						key,
+						e
+					);
+					return;
+				}
+			}
+		}
+		let update_primary = CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE;
+		if let Ok(update_keys) = self.kv_store.list(update_primary, &monitor_key).await {
+			for key in update_keys {
+				if let Err(e) =
+					self.kv_store.remove(update_primary, &monitor_key, &key, true).await
+				{
+					log_error!(
+						self.logger,
+						"Failed to remove archived monitor {}'s update {}: {}",
+						monitor_key.as_str(),
+						key,
+						e
+					);
+					return;
+				}
+			}
+		}
 	}
 
 	// Cleans up monitor updates for given monitor in range `start..=end`.
