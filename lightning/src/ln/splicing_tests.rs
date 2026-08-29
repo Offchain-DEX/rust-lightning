@@ -20,7 +20,7 @@ use crate::ln::chan_utils;
 use crate::ln::channel::{
 	ANCHOR_OUTPUT_VALUE_SATOSHI, CHANNEL_ANNOUNCEMENT_PROPAGATION_DELAY,
 	DISCONNECT_PEER_AWAITING_RESPONSE_TICKS, FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE,
-	MIN_CHANNEL_VALUE_SATOSHIS,
+	MIN_CHANNEL_VALUE_SATOSHIS, TOTAL_BITCOIN_SUPPLY_SATOSHIS,
 };
 use crate::ln::channel_state::{SpliceCandidateDetails, SpliceCandidateStatus, SpliceDetails};
 use crate::ln::channelmanager::{provided_init_features, PaymentId, BREAKDOWN_TIMEOUT};
@@ -1331,6 +1331,62 @@ fn test_config_reject_inbound_splices() {
 	let funding_contribution =
 		initiate_splice_out(&nodes[1], &nodes[0], channel_id, outputs).unwrap();
 	let _ = splice_channel(&nodes[1], &nodes[0], channel_id, funding_contribution);
+}
+
+#[test]
+fn test_splice_in_payment_above_original_channel_value() {
+	// With `max_inbound_htlc_value_in_flight_override_msat` set on both nodes, the in-flight
+	// limit advertised at open does not bind a single payment to the original channel value
+	// once a splice grows the channel, and the enlarged limits survive a reload.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let (persister_0, chain_monitor_0);
+	let node_0;
+	let mut config = test_default_channel_config();
+	config.channel_handshake_config.max_inbound_htlc_value_in_flight_override_msat =
+		Some(TOTAL_BITCOIN_SUPPLY_SATOSHIS * 1000);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(config.clone()), Some(config)]);
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let initial_channel_value_sat = 100_000;
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, initial_channel_value_sat, 0);
+
+	let added_value = Amount::from_sat(initial_channel_value_sat * 2);
+	provide_utxo_reserves(&nodes, 2, added_value * 3 / 4);
+
+	let funding_contribution = do_initiate_splice_in(&nodes[0], &nodes[1], channel_id, added_value);
+	let (splice_tx, _) = splice_channel(&nodes[0], &nodes[1], channel_id, funding_contribution);
+	mine_transaction(&nodes[0], &splice_tx);
+	mine_transaction(&nodes[1], &splice_tx);
+	lock_splice_after_blocks(&nodes[0], &nodes[1], ANTI_REORG_DELAY - 1);
+
+	// A single payment larger than the original channel value goes through.
+	let htlc_limit_msat = nodes[0].node.list_channels()[0].next_outbound_htlc_limit_msat;
+	assert!(htlc_limit_msat > initial_channel_value_sat * 1000);
+	let _ = send_payment(&nodes[0], &[&nodes[1]], htlc_limit_msat);
+
+	// The enlarged limits survive a reload of node 0: both its own inbound enforcement and its
+	// view of the counterparty's limit still admit payments above the original channel value.
+	nodes[1].node.peer_disconnected(nodes[0].node.get_our_node_id());
+	let encoded_monitor_0 = get_monitor!(nodes[0], channel_id).encode();
+	reload_node!(
+		nodes[0],
+		nodes[0].node.encode(),
+		&[&encoded_monitor_0],
+		persister_0,
+		chain_monitor_0,
+		node_0
+	);
+	reconnect_nodes(ReconnectArgs::new(&nodes[0], &nodes[1]));
+
+	let htlc_limit_msat = nodes[1].node.list_channels()[0].next_outbound_htlc_limit_msat;
+	assert!(htlc_limit_msat > initial_channel_value_sat * 1000);
+	let _ = send_payment(&nodes[1], &[&nodes[0]], htlc_limit_msat);
+
+	let htlc_limit_msat = nodes[0].node.list_channels()[0].next_outbound_htlc_limit_msat;
+	assert!(htlc_limit_msat > initial_channel_value_sat * 1000);
+	let _ = send_payment(&nodes[0], &[&nodes[1]], htlc_limit_msat);
 }
 
 #[test]

@@ -106,6 +106,29 @@ pub struct ChannelHandshakeConfig {
 	///
 	/// Maximum value: `100` (Any values larger will be treated as `100` instead.)
 	pub unannounced_channel_max_inbound_htlc_value_in_flight_percentage: u8,
+	/// Sets an absolute value, in millisatoshi, for the total inbound HTLC value in flight,
+	/// taking precedence over both percentage knobs above (for announced and unannounced
+	/// channels alike) when set. This precedence also covers percentage values applied
+	/// per-channel through [`ChannelHandshakeConfigUpdate`], which carries no field for this
+	/// option.
+	///
+	/// The percentage knobs derive the advertised `max_htlc_value_in_flight_msat` from the
+	/// channel value AT OPEN, and the splicing protocol carries no way to renegotiate it — so
+	/// on a spliced channel a value derived that way permanently limits a single payment to
+	/// roughly the channel's original value. An absolute override decouples the advertised cap
+	/// from the opening value, letting payments use the full capacity a channel later grows
+	/// into. The in-flight value on any channel remains bounded by its capacity and reserves
+	/// regardless of this setting.
+	///
+	/// Note that this bounds only the inbound direction (what we accept in flight from our
+	/// counterparty). The outbound direction is bounded by the value the counterparty
+	/// advertised in its own handshake message.
+	///
+	/// Default value: `None` (the percentage knobs apply)
+	///
+	/// Maximum value: the total bitcoin supply, `2_100_000_000_000_000_000` msat (any larger
+	/// value is treated as that maximum)
+	pub max_inbound_htlc_value_in_flight_override_msat: Option<u64>,
 	/// If set, we attempt to negotiate the `scid_privacy` (referred to as `scid_alias` in the
 	/// BOLTs) option for outbound private channels. This provides better privacy by not including
 	/// our real on-chain channel UTXO in each invoice and requiring that our counterparty only
@@ -266,6 +289,7 @@ impl Default for ChannelHandshakeConfig {
 			our_htlc_minimum_msat: 1,
 			announced_channel_max_inbound_htlc_value_in_flight_percentage: 25,
 			unannounced_channel_max_inbound_htlc_value_in_flight_percentage: 100,
+			max_inbound_htlc_value_in_flight_override_msat: None,
 			negotiate_scid_privacy: false,
 			announce_for_forwarding: false,
 			commit_upfront_shutdown_pubkey: true,
@@ -298,6 +322,9 @@ impl Readable for ChannelHandshakeConfig {
 				max_inbound_htlc_value_in_flight_percentage,
 			unannounced_channel_max_inbound_htlc_value_in_flight_percentage:
 				max_inbound_htlc_value_in_flight_percentage,
+			// Not read from the fuzz input so the existing corpus stays valid; the
+			// percentage path above already exercises the derived-value plumbing.
+			max_inbound_htlc_value_in_flight_override_msat: None,
 			negotiate_scid_privacy: Readable::read(reader)?,
 			announce_for_forwarding: Readable::read(reader)?,
 			commit_upfront_shutdown_pubkey: Readable::read(reader)?,

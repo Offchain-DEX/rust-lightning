@@ -4465,9 +4465,14 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 			feerate_per_kw: open_channel_fields.commitment_feerate_sat_per_1000_weight,
 			counterparty_dust_limit_satoshis: open_channel_fields.dust_limit_satoshis,
 			holder_dust_limit_satoshis: MIN_CHAN_DUST_LIMIT_SATOSHIS,
+			// Bounded by the total bitcoin supply rather than the channel value: the peer's
+			// advertised limit is a standing constraint that must keep working when a splice
+			// later grows the channel, while the supply bound keeps downstream arithmetic on
+			// this value comfortably inside u64. The in-flight value we can actually send
+			// stays capped by the channel's capacity and reserves either way.
 			counterparty_max_htlc_value_in_flight_msat: cmp::min(
 				open_channel_fields.max_htlc_value_in_flight_msat,
-				channel_value_satoshis * 1000,
+				TOTAL_BITCOIN_SUPPLY_SATOSHIS * 1000,
 			),
 			holder_max_htlc_value_in_flight_msat: get_holder_max_htlc_value_in_flight_msat(
 				channel_value_satoshis,
@@ -5270,9 +5275,12 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 			};
 
 		self.counterparty_dust_limit_satoshis = common_fields.dust_limit_satoshis;
+		// Bounded by the total bitcoin supply rather than the channel value, matching the bound
+		// applied on inbound opens, so the peer's advertised limit keeps working when a splice
+		// later grows the channel.
 		self.counterparty_max_htlc_value_in_flight_msat = cmp::min(
 			common_fields.max_htlc_value_in_flight_msat,
-			funding.get_value_satoshis() * 1000,
+			TOTAL_BITCOIN_SUPPLY_SATOSHIS * 1000,
 		);
 		funding.counterparty_selected_channel_reserve_satoshis = Some(channel_reserve_satoshis);
 		self.counterparty_htlc_minimum_msat = common_fields.htlc_minimum_msat;
@@ -7078,7 +7086,9 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 
 // Internal utility functions for channels
 
-/// Returns the value to use for `holder_max_htlc_value_in_flight_msat` as a percentage of the
+/// Returns the value to use for `holder_max_htlc_value_in_flight_msat`: the absolute value set
+/// through [`ChannelHandshakeConfig::max_inbound_htlc_value_in_flight_override_msat`] (bounded
+/// by the total bitcoin supply) when present, otherwise a percentage of the
 /// `channel_value_satoshis` in msat, set through
 /// [`ChannelHandshakeConfig::announced_channel_max_inbound_htlc_value_in_flight_percentage`]
 /// or [`ChannelHandshakeConfig::unannounced_channel_max_inbound_htlc_value_in_flight_percentage`]
@@ -7086,12 +7096,16 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 ///
 /// The effective percentage is lower bounded by 1% and upper bounded by 100%.
 ///
+/// [`ChannelHandshakeConfig::max_inbound_htlc_value_in_flight_override_msat`]: crate::util::config::ChannelHandshakeConfig::max_inbound_htlc_value_in_flight_override_msat
 /// [`ChannelHandshakeConfig::announced_channel_max_inbound_htlc_value_in_flight_percentage`]: crate::util::config::ChannelHandshakeConfig::announced_channel_max_inbound_htlc_value_in_flight_percentage
 /// [`ChannelHandshakeConfig::unannounced_channel_max_inbound_htlc_value_in_flight_percentage`]: crate::util::config::ChannelHandshakeConfig::unannounced_channel_max_inbound_htlc_value_in_flight_percentage
 /// [`ChannelHandshakeConfig::announce_for_forwarding`]: crate::util::config::ChannelHandshakeConfig::announce_for_forwarding
 fn get_holder_max_htlc_value_in_flight_msat(
 	channel_value_satoshis: u64, is_announced_channel: bool, config: &ChannelHandshakeConfig,
 ) -> u64 {
+	if let Some(max_msat) = config.max_inbound_htlc_value_in_flight_override_msat {
+		return cmp::min(max_msat, TOTAL_BITCOIN_SUPPLY_SATOSHIS * 1000);
+	}
 	let config_setting = if is_announced_channel {
 		config.announced_channel_max_inbound_htlc_value_in_flight_percentage
 	} else {
@@ -17705,7 +17719,7 @@ mod tests {
 		AwaitingChannelReadyFlags, ChannelState, FundedChannel, HTLCUpdateAwaitingACK,
 		InboundHTLCOutput, InboundHTLCState, InboundUpdateAdd, InboundV1Channel,
 		OutboundHTLCOutput, OutboundHTLCState, OutboundV1Channel, WithChannelContext,
-		MIN_THEIR_CHAN_RESERVE_SATOSHIS,
+		MIN_THEIR_CHAN_RESERVE_SATOSHIS, TOTAL_BITCOIN_SUPPLY_SATOSHIS,
 	};
 	use crate::ln::channel_keys::{RevocationBasepoint, RevocationKey};
 	use crate::ln::channelmanager::{self, HTLCSource, PaymentId, TrustedChannelFeatures};
@@ -18209,6 +18223,72 @@ mod tests {
 		let chan_8 = InboundV1Channel::<&TestKeysInterface>::new(&feeest, &&keys_provider, &&keys_provider, inbound_node_id, &channelmanager::provided_channel_type_features(&config_101_percent), &channelmanager::provided_init_features(&config_101_percent), &chan_1_open_channel_msg, 7, &config_101_percent, 0, &&logger, None).unwrap();
 		let chan_8_value_msat = chan_8.funding.get_value_satoshis() * 1000;
 		assert_eq!(chan_8.context.holder_max_htlc_value_in_flight_msat, chan_8_value_msat);
+
+		// Test that `max_inbound_htlc_value_in_flight_override_msat` takes precedence over the
+		// percentage settings on both the outbound and the inbound construction paths, allowing
+		// values above the channel value.
+		let mut config_override = UserConfig::default();
+		config_override.channel_handshake_config.announce_for_forwarding = announce_channel;
+		config_override.channel_handshake_config.max_inbound_htlc_value_in_flight_override_msat = Some(TOTAL_BITCOIN_SUPPLY_SATOSHIS * 1000);
+		let chan_9 = OutboundV1Channel::<&TestKeysInterface>::new(&feeest, &&keys_provider, &&keys_provider, outbound_node_id, &channelmanager::provided_init_features(&config_override), 10000000, 100000, 42, &config_override, 0, 42, None, &logger, None).unwrap();
+		assert_eq!(chan_9.context.holder_max_htlc_value_in_flight_msat, TOTAL_BITCOIN_SUPPLY_SATOSHIS * 1000);
+
+		let chan_10 = InboundV1Channel::<&TestKeysInterface>::new(&feeest, &&keys_provider, &&keys_provider, inbound_node_id, &channelmanager::provided_channel_type_features(&config_override), &channelmanager::provided_init_features(&config_override), &chan_1_open_channel_msg, 7, &config_override, 0, &&logger, None).unwrap();
+		assert_eq!(chan_10.context.holder_max_htlc_value_in_flight_msat, TOTAL_BITCOIN_SUPPLY_SATOSHIS * 1000);
+
+		// Test that an override below the channel value is honored exactly.
+		config_override.channel_handshake_config.max_inbound_htlc_value_in_flight_override_msat = Some(1_234_567);
+		let chan_11 = OutboundV1Channel::<&TestKeysInterface>::new(&feeest, &&keys_provider, &&keys_provider, outbound_node_id, &channelmanager::provided_init_features(&config_override), 10000000, 100000, 42, &config_override, 0, 42, None, &logger, None).unwrap();
+		assert_eq!(chan_11.context.holder_max_htlc_value_in_flight_msat, 1_234_567);
+
+		// Test that an override above the total bitcoin supply is treated as the total supply.
+		config_override.channel_handshake_config.max_inbound_htlc_value_in_flight_override_msat = Some(u64::MAX);
+		let chan_12 = OutboundV1Channel::<&TestKeysInterface>::new(&feeest, &&keys_provider, &&keys_provider, outbound_node_id, &channelmanager::provided_init_features(&config_override), 10000000, 100000, 42, &config_override, 0, 42, None, &logger, None).unwrap();
+		assert_eq!(chan_12.context.holder_max_htlc_value_in_flight_msat, TOTAL_BITCOIN_SUPPLY_SATOSHIS * 1000);
+	}
+
+	#[test]
+	#[rustfmt::skip]
+	fn test_counterparty_max_htlc_value_in_flight_bounds() {
+		// The counterparty's advertised `max_htlc_value_in_flight_msat` is stored bounded by the
+		// total bitcoin supply rather than the channel value, on both the inbound-open path and
+		// the accept path.
+		let test_est = TestFeeEstimator::new(15000);
+		let feeest = LowerBoundedFeeEstimator::new(&test_est);
+		let logger = TestLogger::new();
+		let secp_ctx = Secp256k1::new();
+		let seed = [42; 32];
+		let network = Network::Testnet;
+		let keys_provider = TestKeysInterface::new(&seed, network);
+		let outbound_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
+		let inbound_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[7; 32]).unwrap());
+		let config = UserConfig::default();
+		let supply_msat = TOTAL_BITCOIN_SUPPLY_SATOSHIS * 1000;
+
+		let mut node_a_chan = OutboundV1Channel::<&TestKeysInterface>::new(&feeest, &&keys_provider, &&keys_provider, outbound_node_id, &channelmanager::provided_init_features(&config), 10000000, 100000, 42, &config, 0, 42, None, &logger, None).unwrap();
+		let channel_value_msat = node_a_chan.funding.get_value_satoshis() * 1000;
+		let mut open_channel_msg = node_a_chan.get_open_channel(ChainHash::using_genesis_block(network), &&logger).unwrap();
+
+		// Inbound-open path: a value above the channel value but within the supply is stored
+		// unclamped, while `u64::MAX` is bounded to the supply.
+		open_channel_msg.common_fields.max_htlc_value_in_flight_msat = channel_value_msat * 5;
+		let node_b_chan = InboundV1Channel::<&TestKeysInterface>::new(&feeest, &&keys_provider, &&keys_provider, inbound_node_id, &channelmanager::provided_channel_type_features(&config), &channelmanager::provided_init_features(&config), &open_channel_msg, 7, &config, 0, &&logger, None).unwrap();
+		assert_eq!(node_b_chan.context.counterparty_max_htlc_value_in_flight_msat, channel_value_msat * 5);
+
+		open_channel_msg.common_fields.max_htlc_value_in_flight_msat = u64::MAX;
+		let mut node_b_chan = InboundV1Channel::<&TestKeysInterface>::new(&feeest, &&keys_provider, &&keys_provider, inbound_node_id, &channelmanager::provided_channel_type_features(&config), &channelmanager::provided_init_features(&config), &open_channel_msg, 7, &config, 0, &&logger, None).unwrap();
+		assert_eq!(node_b_chan.context.counterparty_max_htlc_value_in_flight_msat, supply_msat);
+
+		// Accept path: same bounds.
+		let mut accept_channel_msg = node_b_chan.accept_inbound_channel(&&logger).unwrap();
+		accept_channel_msg.common_fields.max_htlc_value_in_flight_msat = channel_value_msat * 5;
+		node_a_chan.accept_channel(&accept_channel_msg, &config.channel_handshake_limits, &channelmanager::provided_init_features(&config)).unwrap();
+		assert_eq!(node_a_chan.context.counterparty_max_htlc_value_in_flight_msat, channel_value_msat * 5);
+
+		let mut node_a_chan = OutboundV1Channel::<&TestKeysInterface>::new(&feeest, &&keys_provider, &&keys_provider, outbound_node_id, &channelmanager::provided_init_features(&config), 10000000, 100000, 42, &config, 0, 42, None, &logger, None).unwrap();
+		accept_channel_msg.common_fields.max_htlc_value_in_flight_msat = u64::MAX;
+		node_a_chan.accept_channel(&accept_channel_msg, &config.channel_handshake_limits, &channelmanager::provided_init_features(&config)).unwrap();
+		assert_eq!(node_a_chan.context.counterparty_max_htlc_value_in_flight_msat, supply_msat);
 	}
 
 	#[test]
