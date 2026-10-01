@@ -6663,13 +6663,13 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					// HTLCs must either be claimed by a matching script type or through the
 					// revocation path:
 					#[cfg(not(fuzzing))] // Note that the fuzzer is not bound by pesky things like "signatures"
-					assert!(!$htlc.offered || offered_preimage_claim || offered_timeout_claim || revocation_sig_claim, "offered {htlc_claim:?}");
+					debug_assert!(!$htlc.offered || offered_preimage_claim || offered_timeout_claim || revocation_sig_claim, "offered {htlc_claim:?}");
 					#[cfg(not(fuzzing))] // Note that the fuzzer is not bound by pesky things like "signatures"
-					assert!($htlc.offered || accepted_preimage_claim || accepted_timeout_claim || revocation_sig_claim, "!offered {htlc_claim:?}");
+					debug_assert!($htlc.offered || accepted_preimage_claim || accepted_timeout_claim || revocation_sig_claim, "!offered {htlc_claim:?}");
 					// Further, only exactly one of the possible spend paths should have been
 					// matched by any HTLC spend:
 					#[cfg(not(fuzzing))] // Note that the fuzzer is not bound by pesky things like "signatures"
-					assert_eq!(accepted_preimage_claim as u8 + accepted_timeout_claim as u8 +
+					debug_assert_eq!(accepted_preimage_claim as u8 + accepted_timeout_claim as u8 +
 					                 offered_preimage_claim as u8 + offered_timeout_claim as u8 +
 					                 revocation_sig_claim as u8, 1);
 				}
