@@ -457,9 +457,11 @@ pub(super) fn create_recv_pending_htlc_info(
 			requires_blinded_error,
 		}
 	} else {
+		// BOLT 4 has a final node answer a required but absent payment secret with
+		// `incorrect_or_unknown_payment_details`, the same as an unknown payment hash.
 		return Err(InboundHTLCErr {
-			reason: LocalHTLCFailureReason::PaymentSecretRequired,
-			err_data: Vec::new(),
+			reason: LocalHTLCFailureReason::IncorrectPaymentDetails,
+			err_data: invalid_payment_err_data(amt_msat, current_height),
 			msg: "We require payment_secrets",
 		});
 	};
