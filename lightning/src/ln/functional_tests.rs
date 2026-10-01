@@ -7289,7 +7289,7 @@ pub fn test_bad_secret_hash() {
 	// All the below cases should end up being handled exactly identically, so we macro the
 	// resulting events.
 	macro_rules! handle_unknown_invalid_payment_data {
-		($payment_hash: expr) => {
+		($payment_hash: expr, $process_twice: expr) => {
 			check_added_monitors(&nodes[0], 1);
 			let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 			let payment_event = SendEvent::from_event(events.pop().unwrap());
@@ -7298,8 +7298,9 @@ pub fn test_bad_secret_hash() {
 			do_commitment_signed_dance(&nodes[1], &nodes[0], commitment, false, false);
 
 			// We have to forward pending HTLCs once to process the receipt of the HTLC and then
-			// again to process the pending backwards-failure of the HTLC
-			expect_and_process_pending_htlcs(&nodes[1], true);
+			// again to process the pending backwards-failure of the HTLC. An HTLC without a
+			// payment secret is failed as its onion is decoded, which a single pass covers.
+			expect_and_process_pending_htlcs(&nodes[1], $process_twice);
 			let events = nodes[1].node.get_and_clear_pending_events();
 			let fail = HTLCHandlingFailureType::Receive { payment_hash: $payment_hash };
 			expect_htlc_failure_conditions(events, &[fail]);
@@ -7335,20 +7336,32 @@ pub fn test_bad_secret_hash() {
 	let onion = RecipientOnionFields::secret_only(random_secret, 100_000);
 	let id = PaymentId(our_payment_hash.0);
 	nodes[0].node.send_payment_with_route(route.clone(), our_payment_hash, onion, id).unwrap();
-	handle_unknown_invalid_payment_data!(our_payment_hash);
+	handle_unknown_invalid_payment_data!(our_payment_hash, true);
 	expect_payment_failed!(nodes[0], our_payment_hash, true, expected_err_code, expected_err_data);
 
 	// Send a payment with a random payment hash, but the right payment secret
 	let onion = RecipientOnionFields::secret_only(our_payment_secret, 100_000);
 	nodes[0].node.send_payment_with_route(route.clone(), random_hash, onion, id).unwrap();
-	handle_unknown_invalid_payment_data!(random_hash);
+	handle_unknown_invalid_payment_data!(random_hash, true);
 	expect_payment_failed!(nodes[0], random_hash, true, expected_err_code, expected_err_data);
 
 	// Send a payment with a random payment hash and random payment secret
 	let onion = RecipientOnionFields::secret_only(random_secret, 100_000);
-	nodes[0].node.send_payment_with_route(route, random_hash, onion, id).unwrap();
-	handle_unknown_invalid_payment_data!(random_hash);
+	nodes[0].node.send_payment_with_route(route.clone(), random_hash, onion, id).unwrap();
+	handle_unknown_invalid_payment_data!(random_hash, true);
 	expect_payment_failed!(nodes[0], random_hash, true, expected_err_code, expected_err_data);
+
+	// Send a payment with a random payment hash and no payment secret
+	let onion = RecipientOnionFields::spontaneous_empty(100_000);
+	nodes[0].node.send_payment_with_route(route.clone(), random_hash, onion, id).unwrap();
+	handle_unknown_invalid_payment_data!(random_hash, false);
+	expect_payment_failed!(nodes[0], random_hash, true, expected_err_code, expected_err_data);
+
+	// Send a payment with the right payment hash but no payment secret
+	let onion = RecipientOnionFields::spontaneous_empty(100_000);
+	nodes[0].node.send_payment_with_route(route, our_payment_hash, onion, id).unwrap();
+	handle_unknown_invalid_payment_data!(our_payment_hash, false);
+	expect_payment_failed!(nodes[0], our_payment_hash, true, expected_err_code, expected_err_data);
 }
 
 #[xtest(feature = "_externalize_tests")]
